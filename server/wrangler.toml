@@ -9,6 +9,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "cs2-case-opener"
 database_id = "3bafcec3-1d62-456d-9b14-5c5698ae0da0"
+migrations_dir = "src/db/migrations"
 
 # Durable Object: realtime fan-out (WebSocket)
 [durable_objects]
@@ -28,5 +29,5 @@ not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
 # Background jobs (replaces setInterval)
-[cron_triggers]
-schedule = "*/5 * * * *"
+[triggers]
+crons = ["*/5 * * * *"]
