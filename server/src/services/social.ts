@@ -48,18 +48,19 @@ export async function requestFriend(hub: RealtimeHub, from: { id: number; userna
 
 export async function respondFriend(hub: RealtimeHub, user: { id: number; username: string }, requestId: number, accept: boolean) {
   const fromRow = await tx(async (client) => {
-    const r = await client.query('SELECT * FROM friend_requests WHERE id = $1 FOR UPDATE', [requestId]);
+    const r = await client.query('SELECT * FROM friend_requests WHERE id = $1', [requestId]);
     if (!r.rows.length) throw httpError(404, 'request not found');
     const row = r.rows[0];
     if (Number(row.to_id) !== user.id) throw httpError(403, 'not your request');
-    if (row.status !== 'pending') throw httpError(400, 'request already resolved');
+    // flip the status first: only one responder can win
+    const n = await client.update(`UPDATE friend_requests SET status = '${accept ? 'accepted' : 'declined'}', resolved_at = now() WHERE id = $1 AND status = 'pending'`, [requestId]);
+    if (!n) throw httpError(400, 'request already resolved');
     const otherId = Number(row.from_id);
     const a = Math.min(user.id, otherId);
     const b = Math.max(user.id, otherId);
     if (accept) {
       await client.query('INSERT INTO friends (a, b) VALUES ($1,$2) ON CONFLICT DO NOTHING', [a, b]);
     }
-    await client.query(`UPDATE friend_requests SET status = '${accept ? 'accepted' : 'declined'}', resolved_at = now() WHERE id = $1`, [requestId]);
     const from = (await client.query('SELECT id, username FROM users WHERE id = $1', [otherId])).rows[0];
     return from;
   });
@@ -100,14 +101,16 @@ export async function sendGift(hub: RealtimeHub, from: { id: number; username: s
 
   const out = await tx(async (client) => {
     const inst = await client.query(
-      'SELECT ii.*, i.name AS item_name FROM item_instances ii JOIN items i ON i.id = ii.item_id WHERE ii.id = $1 FOR UPDATE',
+      'SELECT ii.*, i.name AS item_name FROM item_instances ii JOIN items i ON i.id = ii.item_id WHERE ii.id = $1',
       [instanceId],
     );
     if (!inst.rows.length) throw httpError(404, 'item not found');
     const item = inst.rows[0];
     if (Number(item.user_id) !== from.id) throw httpError(403, 'not your item');
     if (item.listed) throw httpError(400, 'item is listed on the market');
-    await client.query('UPDATE item_instances SET user_id = $2 WHERE id = $1', [instanceId, to.id]);
+    // transfer flip: only one gift can win the item
+    const n = await client.update('UPDATE item_instances SET user_id = $2 WHERE id = $1 AND user_id = $3 AND listed = FALSE', [instanceId, to.id, from.id]);
+    if (!n) throw httpError(400, 'item is no longer giftable');
     await bumpInventory(client, from.id, -1, -Number(item.price_cents));
     await bumpInventory(client, to.id, +1, +Number(item.price_cents));
     return { name: item.item_name, valueCents: Number(item.price_cents) };
@@ -126,41 +129,43 @@ export async function createTradeOffer(hub: RealtimeHub, from: { id: number; use
   if (!isFriend) throw httpError(403, 'you can only trade with friends');
   if (myInstanceId === theirInstanceId) throw httpError(400, 'you are offering the same item twice');
 
-  await tx(async (client) => {
-    const mine = await client.query('SELECT * FROM item_instances WHERE id = $1 FOR UPDATE', [myInstanceId]);
-    if (!mine.rows.length) throw httpError(404, 'your item not found');
-    if (Number(mine.rows[0].user_id) !== from.id) throw httpError(403, 'not your item');
-    if (mine.rows[0].listed) throw httpError(400, 'your item is listed on the market');
-    let theirs = null;
-    if (theirInstanceId != null) {
-      const t = await client.query('SELECT * FROM item_instances WHERE id = $1 FOR UPDATE', [theirInstanceId]);
-      if (!t.rows.length) throw httpError(404, 'their item not found');
-      if (Number(t.rows[0].user_id) !== to.id) throw httpError(403, 'their item not found');
-      if (t.rows[0].listed) throw httpError(400, 'their item is listed on the market');
-      theirs = t.rows[0];
-    }
-    await client.query(
-      `INSERT INTO trade_offers (from_id, to_id, from_instance, to_instance, status)
-       VALUES ($1,$2,$3,$4,'pending')`,
-      [from.id, to.id, myInstanceId, theirInstanceId],
-    );
-    return { ok: true };
-  });
+  const mine = await one<any>('SELECT * FROM item_instances WHERE id = $1', [myInstanceId]);
+  if (!mine) throw httpError(404, 'your item not found');
+  if (Number(mine.user_id) !== from.id) throw httpError(403, 'not your item');
+  if (mine.listed) throw httpError(400, 'your item is listed on the market');
+  if (theirInstanceId != null) {
+    const t = await one<any>('SELECT * FROM item_instances WHERE id = $1', [theirInstanceId]);
+    if (!t) throw httpError(404, 'their item not found');
+    if (Number(t.user_id) !== to.id) throw httpError(403, 'their item not found');
+    if (t.listed) throw httpError(400, 'their item is listed on the market');
+  }
+  await run(
+    `INSERT INTO trade_offers (from_id, to_id, from_instance, to_instance, status)
+     VALUES ($1,$2,$3,$4,'pending')`,
+    [from.id, to.id, myInstanceId, theirInstanceId],
+  );
   await pushNotification(hub, to.id, 'trade', 'Trade offer', `${from.username} offered a trade.`);
   return { ok: true };
 }
 
 export async function respondTrade(hub: RealtimeHub, user: { id: number; username: string }, offerId: number, accept: boolean) {
   const out = await tx(async (client) => {
-    const r = await client.query('SELECT * FROM trade_offers WHERE id = $1 FOR UPDATE', [offerId]);
+    const r = await client.query('SELECT * FROM trade_offers WHERE id = $1', [offerId]);
     if (!r.rows.length) throw httpError(404, 'offer not found');
     const row = r.rows[0];
     if (Number(row.to_id) !== user.id) throw httpError(403, 'not your offer');
-    if (row.status !== 'pending') throw httpError(400, 'offer already resolved');
+    // flip the offer first: only one responder can win it
+    const n = await client.update(`UPDATE trade_offers SET status = '${accept ? 'accepted' : 'declined'}', resolved_at = now() WHERE id = $1 AND status = 'pending'`, [offerId]);
+    if (!n) throw httpError(400, 'offer already resolved');
     const fromId = Number(row.from_id);
 
-    const instA = await client.query('SELECT * FROM item_instances WHERE id = $1 FOR UPDATE', [Number(row.from_instance)]);
-    const instB = row.to_instance != null ? await client.query('SELECT * FROM item_instances WHERE id = $1 FOR UPDATE', [Number(row.to_instance)]) : null;
+    const instA = await client.query(
+      'SELECT ii.*, i.name AS item_name FROM item_instances ii JOIN items i ON i.id = ii.item_id WHERE ii.id = $1',
+      [Number(row.from_instance)],
+    );
+    const instB = row.to_instance != null
+      ? await client.query('SELECT * FROM item_instances WHERE id = $1', [Number(row.to_instance)])
+      : null;
     if (!instA.rows.length) throw httpError(400, 'item from the offer is gone');
     if (Number(instA.rows[0].user_id) !== fromId) throw httpError(400, 'offer item is gone');
     if (instA.rows[0].listed) throw httpError(400, 'offer item is on the market');
@@ -178,8 +183,7 @@ export async function respondTrade(hub: RealtimeHub, user: { id: number; usernam
       await bumpInventory(client, user.id, 0, Number(a.price_cents) - (b ? Number(b.price_cents) : 0));
       await bumpInventory(client, fromId, 0, (b ? Number(b.price_cents) : 0) - Number(a.price_cents));
     }
-    await client.query(`UPDATE trade_offers SET status = '${accept ? 'accepted' : 'declined'}', resolved_at = now() WHERE id = $1`, [offerId]);
-    return { fromId, name: instA.rows[0].name, valueA: Number(instA.rows[0].price_cents) };
+    return { fromId, name: instA.rows[0].item_name, valueA: Number(instA.rows[0].price_cents) };
   });
   await pushNotification(hub, out.fromId, 'trade', accept ? 'Trade accepted' : 'Trade declined', `${user.username} ${accept ? 'accepted' : 'declined'} your trade offer of ${out.name}.`).catch(() => {});
   return { ok: true };
@@ -235,15 +239,12 @@ export async function listTradeOffers(userId: number) {
 
 /** Sender cancels a pending outgoing offer. */
 export async function cancelTrade(hub: RealtimeHub, user: { id: number; username: string }, offerId: number) {
-  const out = await tx(async (client) => {
-    const r = await client.query('SELECT * FROM trade_offers WHERE id = $1 FOR UPDATE', [offerId]);
-    if (!r.rows.length) throw httpError(404, 'offer not found');
-    const row = r.rows[0];
-    if (Number(row.from_id) !== user.id) throw httpError(403, 'not your offer');
-    if (row.status !== 'pending') throw httpError(400, 'offer already resolved');
-    await client.query(`UPDATE trade_offers SET status = 'cancelled', resolved_at = now() WHERE id = $1`, [offerId]);
-    return { toId: Number(row.to_id) };
-  });
+  const r = await one<any>('SELECT * FROM trade_offers WHERE id = $1', [offerId]);
+  if (!r) throw httpError(404, 'offer not found');
+  if (Number(r.from_id) !== user.id) throw httpError(403, 'not your offer');
+  const n = await run(`UPDATE trade_offers SET status = 'cancelled', resolved_at = now() WHERE id = $1 AND status = 'pending'`, [offerId]);
+  if (!n) throw httpError(400, 'offer already resolved');
+  const out = { toId: Number(r.to_id) };
   await pushNotification(hub, out.toId, 'trade', 'Trade offer cancelled', `${user.username} cancelled their trade offer.`, { offerId }).catch(() => {});
   return { ok: true };
 }

@@ -25,7 +25,7 @@ export async function quickSellMany(
     const rows = (await c.query(
       `SELECT ii.*, i.name AS item_name, i.category
        FROM item_instances ii JOIN items i ON i.id = ii.item_id
-       WHERE ii.id = ANY($1::bigint[]) FOR UPDATE`,
+       WHERE ii.id = ANY($1::bigint[])`,
       [ids],
     )).rows;
     if (rows.length !== ids.length) throw httpError(400, 'one or more items no longer exist');
@@ -33,8 +33,11 @@ export async function quickSellMany(
       if (Number(r.user_id) !== userId) throw httpError(403, 'one of the items is not yours');
       if (r.listed) throw httpError(400, `${r.item_name} is listed on the market, cancel the listing first`);
     }
-    const user = await c.query('SELECT balance_cents FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (!user.rows.length) throw httpError(401, 'user gone');
+    // detach opening history BEFORE the delete: the FK cascade would wipe it
+    await c.query('UPDATE openings SET instance_id = NULL WHERE instance_id = ANY($1::bigint[])', [ids]);
+    // delete first: only one quick-sell can win each item
+    const n = await c.update('DELETE FROM item_instances WHERE id = ANY($1::bigint[]) AND user_id = $2 AND listed = FALSE', [ids, userId]);
+    if (n !== ids.length) throw httpError(400, 'one or more items are no longer sellable');
 
     let saleCents = 0;
     const names: string[] = [];
@@ -63,15 +66,15 @@ export async function quickSellMany(
       names.push(row.item_name);
     }
 
-    const before = Number(user.rows[0].balance_cents);
+    const bal = (await c.query('SELECT balance_cents FROM users WHERE id = $1', [userId])).rows[0].balance_cents;
     await c.query('UPDATE users SET balance_cents = balance_cents + $2, updated_at = now() WHERE id = $1', [userId, saleCents]);
+    const before = Number(bal);
     await c.query(
       'INSERT INTO transactions (user_id, kind, amount_cents, balance_after_cents, ref) VALUES ($1,$2,$3,$4,$5)',
       [userId, 'quick_sell', saleCents, before + saleCents, `instances:${ids.length}`],
     );
     await c.query('UPDATE openings SET instance_id = NULL WHERE instance_id = ANY($1::bigint[])', [ids]);
     await c.query('DELETE FROM market_listings WHERE instance_id = ANY($1::bigint[])', [ids]);
-    await c.query('DELETE FROM item_instances WHERE id = ANY($1::bigint[])', [ids]);
     return { saleCents, count: rows.length, names };
   });
   await pushNotification(
@@ -100,7 +103,7 @@ export async function quickSellItem(
     const inst = await c.query(
       `SELECT ii.*, i.name AS item_name, i.category
        FROM item_instances ii JOIN items i ON i.id = ii.item_id
-       WHERE ii.id = $1 FOR UPDATE`,
+       WHERE ii.id = $1`,
       [instanceId],
     );
     if (!inst.rows.length) throw httpError(404, 'item not found');
@@ -108,8 +111,11 @@ export async function quickSellItem(
     if (Number(row.user_id) !== userId) throw httpError(403, 'not your item');
     if (row.listed) throw httpError(400, 'item is listed on the market, cancel the listing first');
 
-    const user = await c.query('SELECT balance_cents FROM users WHERE id = $1 FOR UPDATE', [userId]);
-    if (!user.rows.length) throw httpError(401, 'user gone');
+    // detach opening history BEFORE the delete: the FK cascade would wipe it
+    await c.query('UPDATE openings SET instance_id = NULL WHERE instance_id = $1', [instanceId]);
+    // delete first: only one quick-sell can win the item
+    const n = await c.update('DELETE FROM item_instances WHERE id = $1 AND user_id = $2 AND listed = FALSE', [instanceId, userId]);
+    if (!n) throw httpError(400, 'item no longer sellable');
 
     const priceRows = (
       await c.query(
@@ -139,12 +145,9 @@ export async function quickSellItem(
     );
     await c.query(
       'INSERT INTO transactions (user_id, kind, amount_cents, balance_after_cents, ref) VALUES ($1,$2,$3,$4,$5)',
-      [userId, 'quick_sell', saleCents, Number(user.rows[0].balance_cents) + saleCents, `instance:${instanceId}`],
+      [userId, 'quick_sell', saleCents, (await c.query('SELECT balance_cents FROM users WHERE id = $1', [userId])).rows[0].balance_cents, `instance:${instanceId}`],
     );
-    // keep opening history; detach references that would cascade-delete
-    await c.query('UPDATE openings SET instance_id = NULL WHERE instance_id = $1', [instanceId]);
     await c.query('DELETE FROM market_listings WHERE instance_id = $1', [instanceId]);
-    await c.query('DELETE FROM item_instances WHERE id = $1', [instanceId]);
 
     return { saleCents, valueCents, itemName: row.item_name };
   });

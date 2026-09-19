@@ -1,0 +1,35 @@
+name = "cs2-case-opener"
+main = "src/worker.ts"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# dev-only admin bootstrap password; production must set this as a secret
+ADMIN_PASSWORD = "hola67"
+
+# D1 database (create once: wrangler d1 create cs2_case_opener_d1, then
+# run `npm run db:init` to apply the SQL migrations locally)
+[[d1_databases]]
+binding = "DB"
+database_name = "cs2-case-opener"
+database_id = "11111111-1111-4111-8111-111111111111"
+
+# Durable Object: realtime fan-out (WebSocket)
+[durable_objects]
+bindings = [
+  { name = "RT", class_name = "Realtime" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Realtime"]
+
+# Static assets: the built React app (web/dist)
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# Background jobs (replaces setInterval)
+[cron_triggers]
+schedule = "*/5 * * * *"

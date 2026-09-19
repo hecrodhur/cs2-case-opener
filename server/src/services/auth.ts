@@ -1,77 +1,101 @@
-import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
-import { query, one, run, getPool } from '../db.js';
-import { config } from '../config.js';
+import { query, one, run, js } from '../db.js';
+import { getSettings } from './global.js';
+import { config, getAdminPassword } from '../config.js';
 
-const scryptAsync = promisify(scrypt);
+const PBKDF2_ITERATIONS = 150_000;
 
-export async function hashPassword(password: string): Promise<string> {
-  const salt = randomBytes(16).toString('hex');
-  const buf = (await scryptAsync(password, salt, 32)) as Buffer;
-  return `${salt}:${buf.toString('hex')}`;
+function b64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
 }
 
-export async function verifyPassword(password: string, stored: string): Promise<boolean> {
-  const [salt, hash] = stored.split(':');
-  if (!salt || !hash) return false;
-  const buf = (await scryptAsync(password, salt, 32)) as Buffer;
-  return timingSafeEqual(buf, Buffer.from(hash, 'hex'));
+function unb64(s: string): Uint8Array {
+  const bin = atob(s);
+  const b = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+  return b;
+}
+
+async function deriveBits(password: string, salt: Uint8Array): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password).buffer as ArrayBuffer, 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: salt as unknown as BufferSource, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    key,
+    256,
+  );
+  return new Uint8Array(bits);
+}
+
+export async function hashPassword(plain: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const h = await deriveBits(plain, salt);
+  return `pbkdf2$${PBKDF2_ITERATIONS}$${b64(salt)}$${b64(h)}`;
+}
+
+export async function verifyPassword(plain: string, stored: string): Promise<boolean> {
+  const parts = String(stored).split('$');
+  if (parts.length !== 4 || parts[0] !== 'pbkdf2') return false;
+  try {
+    const expected = await deriveBits(plain, unb64(parts[2]));
+    const actual = unb64(parts[3]);
+    if (expected.length !== actual.length) return false;
+    let diff = 0;
+    for (let i = 0; i < expected.length; i++) diff |= expected[i] ^ actual[i];
+    return diff === 0;
+  } catch {
+    return false;
+  }
+}
+
+export function randomHex(bytes: number): string {
+  const b = crypto.getRandomValues(new Uint8Array(bytes));
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, '0');
+  return s;
 }
 
 export async function createSession(userId: number): Promise<string> {
-  const token = randomBytes(32).toString('hex');
-  const expires = new Date(Date.now() + config.sessionDays * 86400_000);
+  const token = randomHex(32);
+  const expires = new Date(Date.now() + config.sessionDays * 864e5).toISOString();
   await run('INSERT INTO sessions (token, user_id, expires_at) VALUES ($1,$2,$3)', [token, userId, expires]);
   return token;
 }
 
-export async function userFromToken(token: string | null | undefined): Promise<any | null> {
-  if (!token) return null;
+export async function userFromToken(token: string): Promise<any | null> {
   const row = await one<any>(
-    `SELECT u.id, u.username, u.role, u.balance_cents, u.banned, u.settings, u.avatar
-     FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.token = $1 AND s.expires_at > now()`,
+    `SELECT u.id, u.username, u.role, u.avatar, u.balance_cents, u.banned, u.settings,
+            i.item_count, i.total_value_cents
+     FROM users u
+     JOIN sessions s ON s.user_id = u.id
+     LEFT JOIN inventories i ON i.user_id = u.id
+     WHERE s.token = $1 AND s.expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
     [token],
   );
   if (!row) return null;
-  // pg returns bigint as string; keep ids numeric for JS comparisons
-  return { ...row, id: Number(row.id), balance_cents: Number(row.balance_cents) };
-}
-
-export async function seedAdmin() {
-  const existing = await one<any>('SELECT id FROM users WHERE username = $1', [config.adminUsername]);
-  if (existing) return;
-  const passHash = await hashPassword(config.adminPassword);
-  await run(
-    'INSERT INTO users (username, pass_hash, role, balance_cents) VALUES ($1,$2,$3,$4)',
-    [config.adminUsername, passHash, 'admin', config.welcomeBalanceCents],
-  );
-  await run(
-    'INSERT INTO audit_logs (action, target, detail) VALUES ($1,$2,$3::jsonb)',
-    ['admin_seed', config.adminUsername, { note: 'admin account created at boot; change password via DB if deploying' }],
-  );
-}
-
-export function requireLogin(user: any): any {
-  if (!user) {
-    const e: any = new Error('unauthorized');
-    e.statusCode = 401;
-    throw e;
-  }
-  if (user.banned) {
-    const e: any = new Error('banned');
-    e.statusCode = 403;
-    throw e;
-  }
+  const user: any = { ...row, id: Number(row.id), balance_cents: Number(row.balance_cents) };
+  user.settings = js<Record<string, any>>(row.settings) ?? {};
   return user;
 }
 
-export function requireAdmin(user: any): any {
-  requireLogin(user);
+export function requireAdmin(user: any) {
   if (user.role !== 'admin') {
     const e: any = new Error('forbidden');
     e.statusCode = 403;
     throw e;
   }
   return user;
+}
+
+/** Create the default admin account (username "admin") when the table is empty. */
+export async function seedAdmin(): Promise<void> {
+  const existing = await one<any>("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+  if (existing) return;
+  const settings = await getSettings();
+  const hash = await hashPassword(getAdminPassword());
+  await run(
+    `INSERT INTO users (username, pass_hash, role, balance_cents)
+     VALUES ('admin', $1, 'admin', $2)`,
+    [hash, settings.welcomeBalanceCents],
+  );
 }

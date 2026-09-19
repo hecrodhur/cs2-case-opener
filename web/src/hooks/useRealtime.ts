@@ -14,33 +14,76 @@ export interface Drop {
 type TickerCb = (d: Drop) => void;
 
 const tickerCbs = new Set<TickerCb>();
-let es: EventSource | null = null;
+let ws: WebSocket | null = null;
+let closing = false;
 let listeners = 0;
 let authListenerInstalled = false;
+let reconnectDelay = 1000;
+
+function wsUrl(): string | null {
+  const token = getToken();
+  if (!token) return null;
+  let base = API_BASE;
+  if (!base) {
+    base = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+  } else {
+    base = base.replace(/^http/, 'ws');
+  }
+  return `${base}/api/realtime?token=${encodeURIComponent(token)}`;
+}
 
 function connect() {
-  if (es) return;
-  const token = getToken();
-  if (!token) return;
-  es = new EventSource(`${API_BASE}/api/realtime?token=${encodeURIComponent(token)}`);
-  es.addEventListener('ticker', (e: MessageEvent) => {
+  if (ws || closing) return;
+  const url = wsUrl();
+  if (!url) return;
+  ws = new WebSocket(url);
+  ws.onopen = () => {
+    reconnectDelay = 1000;
+  };
+  ws.onmessage = (e: MessageEvent) => {
+    let msg: { event: string; data: any };
     try {
-      const d = JSON.parse(e.data) as Drop;
-      tickerCbs.forEach((cb) => cb(d));
+      msg = JSON.parse(String(e.data));
     } catch {
-      // ignore malformed event
+      return;
     }
-  });
-  es.addEventListener('user', () => useStore.getState().refresh().catch(() => {}));
-  es.addEventListener('notify', () => useStore.getState().refreshNotifications().catch(() => {}));
-  es.addEventListener('battles', () => useStore.setState((s) => ({ battlesTick: (s.battlesTick ?? 0) + 1 })));
+    switch (msg.event) {
+      case 'drop':
+        tickerCbs.forEach((cb) => cb(msg.data as Drop));
+        break;
+      case 'user':
+        useStore.getState().refresh().catch(() => {});
+        break;
+      case 'notify':
+        useStore.getState().refreshNotifications().catch(() => {});
+        break;
+      case 'battles':
+        useStore.setState((s) => ({ battlesTick: (s.battlesTick ?? 0) + 1 }));
+        break;
+    }
+  };
+  ws.onclose = () => {
+    ws = null;
+    if (closing) return;
+    if (listeners > 0 && getToken()) {
+      setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+    }
+  };
+  ws.onerror = () => ws?.close();
 }
 
 function closeSocket() {
-  if (es) {
-    es.close();
-    es = null;
+  closing = true;
+  if (ws) {
+    try {
+      ws.close();
+    } catch {
+      // already closed
+    }
+    ws = null;
   }
+  closing = false;
 }
 
 function ensureAuthListener() {
@@ -59,7 +102,7 @@ function disconnect() {
   closeSocket();
 }
 
-/** Keep the shared SSE socket alive while mounted (Navbar does this). */
+/** Keep the shared WebSocket alive while mounted (Navbar does this). */
 export function useRealtimeConnection() {
   useEffect(() => {
     listeners++;

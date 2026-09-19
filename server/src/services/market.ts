@@ -18,12 +18,13 @@ export async function createListing(userId: number, instanceId: number, priceCen
       [instanceId],
     );
     if (existing.rows.length) throw httpError(400, 'item already listed');
-    const r = await c.query(
-      "INSERT INTO market_listings (instance_id, seller_id, price_cents, status) VALUES ($1,$2,$3,'active') RETURNING id, created_at",
+    const id = await c.insert(
+      "INSERT INTO market_listings (instance_id, seller_id, price_cents, status) VALUES ($1,$2,$3,'active')",
       [instanceId, userId, priceCents],
     );
     await c.query('UPDATE item_instances SET listed = TRUE WHERE id = $1', [instanceId]);
-    return r.rows[0];
+    const row = await c.query('SELECT * FROM market_listings WHERE id = $1', [id]);
+    return row.rows[0];
   });
   return l;
 }
@@ -46,31 +47,30 @@ export async function buyListing(hub: RealtimeHub, buyerId: number, listingId: n
     const listing = l.rows[0];
     if (listing.seller_id === buyerId) throw httpError(400, 'cannot buy your own listing');
 
-    const buyer = await c.query('SELECT id, username, balance_cents FROM users WHERE id = $1 FOR UPDATE', [buyerId]);
+    const buyer = await c.query('SELECT id, username, balance_cents FROM users WHERE id = $1', [buyerId]);
     if (!buyer.rows.length) throw httpError(401, 'user gone');
     const price = Number(listing.price_cents);
-    if (Number(buyer.rows[0].balance_cents) < price) throw httpError(400, 'insufficient balance');
 
-    const inst = await c.query('SELECT * FROM item_instances WHERE id = $1 FOR UPDATE', [listing.instance_id]);
+    const inst = await c.query('SELECT * FROM item_instances WHERE id = $1', [listing.instance_id]);
     if (!inst.rows.length) throw httpError(404, 'item gone');
 
     const fee = Math.round((price * settings.marketFeePct) / 100);
     const sellerNet = price - fee;
-    const newBuyerBalance = Number(buyer.rows[0].balance_cents) - price;
 
     const seller = await c.query('SELECT id, username FROM users WHERE id = $1', [listing.seller_id]);
     if (!seller.rows.length) throw httpError(400, 'seller gone');
 
-    await c.query('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1', [buyerId, price]);
+    // conditional charge + status flip: only one buyer can win the flip
+    const charged = await c.update('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1 AND balance_cents >= $2', [buyerId, price]);
+    if (!charged) throw httpError(400, 'insufficient balance');
+    const flipped = await c.update("UPDATE market_listings SET status = 'sold', sold_to = $2, sold_at = now() WHERE id = $1 AND status = 'active'", [listingId, buyerId]);
+    if (!flipped) throw httpError(400, 'listing not found or sold');
+    const newBuyerBalance = Number(buyer.rows[0].balance_cents) - price;
     await c.query('UPDATE users SET balance_cents = balance_cents + $2, updated_at = now() WHERE id = $1', [
       listing.seller_id,
       sellerNet,
     ]);
     await c.query('UPDATE item_instances SET user_id = $2, listed = FALSE WHERE id = $1', [listing.instance_id, buyerId]);
-    await c.query("UPDATE market_listings SET status = 'sold', sold_to = $2, sold_at = now() WHERE id = $1", [
-      listingId,
-      buyerId,
-    ]);
     await c.query(
       'INSERT INTO transactions (user_id, kind, amount_cents, balance_after_cents, ref) VALUES ($1,$2,$3,$4,$5)',
       [buyerId, 'market_buy', -price, newBuyerBalance, `listing:${listingId}`],

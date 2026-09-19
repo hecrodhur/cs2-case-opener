@@ -1,4 +1,4 @@
-import { getPool, one, query, run, tx } from '../db.js';
+import { one, query, run, tx, js } from '../db.js';
 import { rollRarity, rollFloat, rollBool, rollInt, makeSeed, wearFromFloat } from '../util/rng.js';
 import { getSettings } from './global.js';
 import { estimatedValueCents, resolveSteamPrice } from '../util/value.js';
@@ -39,7 +39,7 @@ export async function loadCaseWithPools(caseId: number): Promise<CaseWithPools |
     name: c.name,
     image: c.image,
     costCents: c.cost_cents,
-    probabilities: c.probabilities ?? {},
+    probabilities: js(c.probabilities) ?? {},
     active: c.active,
     pools,
   };
@@ -98,7 +98,7 @@ export async function rollDrop(c: CaseWithPools): Promise<RollDrop> {
   const wear = floatValue != null ? wearFromFloat(floatValue) : null;
   const stattrak = Boolean(item.stattrak) && rollBool(settings.stattrakChance);
   const souvenir = Boolean(item.souvenir) && rollBool(settings.souvenirChance);
-  const phaseCount = (item.extra?.phaseCount as number | undefined) ?? 0;
+  const phaseCount = (js<Record<string, any>>(item.extra)?.phaseCount as number | undefined) ?? 0;
   const phase = phaseCount > 0 ? rollInt(phaseCount) + 1 : null;
   const seed = makeSeed();
   const priceRows = await resolveSteamPrice(item.id);
@@ -113,27 +113,25 @@ export async function rollDrop(c: CaseWithPools): Promise<RollDrop> {
  * Persist a rolled drop inside the caller's transaction: instance + opening
  * row + inventory summary, and optionally charge the case cost.
  */
-export async function persistDrop(client: any, userId: number, c: CaseWithPools, d: RollDrop, chargeCents: number) {
+export async function persistDrop(client: any, userId: number, c: CaseWithPools, d: RollDrop, chargeCents: number, balanceAfter?: number) {
   if (chargeCents > 0) {
-    const u = await client.query('SELECT balance_cents FROM users WHERE id = $1 FOR UPDATE', [userId]);
+    const u = await client.query('SELECT balance_cents FROM users WHERE id = $1', [userId]);
     if (!u.rows.length) throw httpError(401, 'user gone');
-    if (Number(u.rows[0].balance_cents) < chargeCents) throw httpError(400, 'insufficient balance');
-    await client.query('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1', [userId, chargeCents]);
+    const after = balanceAfter ?? Number(u.rows[0].balance_cents);
     await client.query(
       'INSERT INTO transactions (user_id, kind, amount_cents, balance_after_cents, ref) VALUES ($1,$2,$3,$4,$5)',
-      [userId, 'case_open', -chargeCents, Number(u.rows[0].balance_cents) - chargeCents, `case:${c.id}`],
+      [userId, 'case_open', -chargeCents, after, `case:${c.id}`],
     );
   }
-  const inst = await client.query(
+  const instanceId: number = await client.insert(
     `INSERT INTO item_instances
        (item_id, user_id, rarity_tier, float_value, wear, stattrak, souvenir, pattern, phase, seed, price_cents, case_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
     [d.item.id, userId, d.tier, d.floatValue, d.wear, d.stattrak, d.souvenir, d.item.pattern, d.phase, d.seed, d.priceCents, c.id],
   );
-  const instanceId: number = inst.rows[0].id;
-  const op = await client.query(
+  const openingId: number = await client.insert(
     `INSERT INTO openings (user_id, case_id, instance_id, rarity_tier, float_value, wear, item_name, price_cents, cost_cents, seed)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [userId, c.id, instanceId, d.tier, d.floatValue, d.wear, d.item.name, d.priceCents, chargeCents, d.seed],
   );
   await client.query(
@@ -143,7 +141,7 @@ export async function persistDrop(client: any, userId: number, c: CaseWithPools,
        total_value_cents = inventories.total_value_cents + COALESCE($2,0), updated_at = now()`,
     [userId, d.priceCents],
   );
-  return { instanceId, openingId: op.rows[0].id };
+  return { instanceId, openingId };
 }
 
 export async function openCase(hub: RealtimeHub, user: { id: number; username?: string }, caseId: number): Promise<OpeningResult> {
@@ -160,14 +158,15 @@ export async function openCase(hub: RealtimeHub, user: { id: number; username?: 
 
   // --- atomic charge + persistence ---------------------------------------
   const result = await tx(async (client) => {
-    const u = await client.query('SELECT id, balance_cents, banned FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+    const u = await client.query('SELECT id, balance_cents, banned FROM users WHERE id = $1', [user.id]);
     if (!u.rows.length) throw httpError(401, 'user gone');
     if (u.rows[0].banned) throw httpError(403, 'banned');
-    const balance = Number(u.rows[0].balance_cents);
-    if (balance < cost) throw httpError(400, 'insufficient balance');
-    const newBalance = balance - cost;
-    await client.query('UPDATE users SET balance_cents = $2, updated_at = now() WHERE id = $1', [user.id, newBalance]);
-    return persistDrop(client, user.id, c, d, 0);
+    // conditional update: the charge only lands when the balance covers it,
+    // so concurrent opens cannot double-spend even without a DB transaction
+    const n = await client.update('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1 AND balance_cents >= $2', [user.id, cost]);
+    if (!n) throw httpError(400, 'insufficient balance');
+    const u2 = await client.query('SELECT balance_cents FROM users WHERE id = $1', [user.id]);
+    return persistDrop(client, user.id, c, d, 0, Number(u2.rows[0].balance_cents));
   });
 
   await run('INSERT INTO audit_logs (actor_user_id, action, target, detail) VALUES ($1,$2,$3,$4::jsonb)', [
@@ -230,8 +229,8 @@ export function httpError(status: number, message: string): any {
   return e;
 }
 
-export function refreshInventorySummary(userId: number): Promise<void> {
-  return run(
+export async function refreshInventorySummary(userId: number): Promise<void> {
+  await run(
     `INSERT INTO inventories (user_id, item_count, total_value_cents, updated_at)
      SELECT $1, COUNT(*), COALESCE(SUM(price_cents),0), now() FROM item_instances WHERE user_id = $1
      ON CONFLICT (user_id) DO UPDATE SET
@@ -242,4 +241,3 @@ export function refreshInventorySummary(userId: number): Promise<void> {
   );
 }
 
-export { getPool };

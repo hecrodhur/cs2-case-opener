@@ -1,14 +1,11 @@
 import type { CsgoApiData } from './api.js';
 import type { SkinInfo, CrateInfo } from 'shared';
 import { loadCaseDefinitions } from './caseDefinitions.js';
-import { query, one, run, tx, getPool } from '../db.js';
+import { query, one, run, insert } from '../db.js';
 import type { RarityTier } from 'shared';
 import { RARITY_TIERS, DEFAULT_PROBABILITIES } from 'shared';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = fileURLToPath(new URL('.', import.meta.url));
-export const CASE_DEFINITIONS_DIR = join(__dirname, '..', 'case-definitions');
+// definitions are bundled via JSON imports (see data/caseDefinitions.ts)
+export const CASE_DEFINITIONS_DIR = 'src/case-definitions';
 
 export interface SyncResult {
   skins: number;
@@ -28,7 +25,8 @@ const ITEM_COLS = `id, kind, market_hash_name, name, weapon, category, pattern, 
   rarity_tier, min_float, max_float, stattrak, souvenir, phase, image, collections, def_index, extra`;
 
 async function upsertSkin(s: SkinInfo): Promise<number> {
-  const row = await one<any>(
+  // upsert: last_row_id is the existing rowid when the conflict takes the UPDATE branch
+  return insert(
     `INSERT INTO items (kind, market_hash_name, name, weapon, category, pattern, paint_index,
        rarity_tier, min_float, max_float, stattrak, souvenir, phase, image, collections, api_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,FALSE,$13,$14,$15)
@@ -37,12 +35,10 @@ async function upsertSkin(s: SkinInfo): Promise<number> {
        category = EXCLUDED.category, pattern = EXCLUDED.pattern, paint_index = EXCLUDED.paint_index,
        rarity_tier = EXCLUDED.rarity_tier, min_float = EXCLUDED.min_float, max_float = EXCLUDED.max_float,
        stattrak = EXCLUDED.stattrak, souvenir = EXCLUDED.souvenir, image = EXCLUDED.image,
-       collections = EXCLUDED.collections, api_id = EXCLUDED.api_id
-     RETURNING ${ITEM_COLS}`,
+       collections = EXCLUDED.collections, api_id = EXCLUDED.api_id`,
     [skinKind(s.category), s.name, s.name, s.weapon, s.category, s.pattern, s.paintIndex, s.rarity,
      s.minFloat, s.maxFloat, s.stattrak, s.souvenir, s.image, s.collections, s.id],
   );
-  return row.id;
 }
 
 export async function syncCatalog(data: CsgoApiData, defDir: string = CASE_DEFINITIONS_DIR): Promise<SyncResult> {
@@ -67,14 +63,13 @@ export async function syncCatalog(data: CsgoApiData, defDir: string = CASE_DEFIN
     if (!c.contains.length) continue;
     const def = defs.defs.get(c.name);
 
-    const caseRow = await one<any>(
+    const caseRow = { id: await insert(
       `INSERT INTO items (kind, market_hash_name, name, image, def_index, api_id)
        VALUES ('case', $1, $2, $3, $4, $5)
        ON CONFLICT (market_hash_name, kind)
-       DO UPDATE SET name = EXCLUDED.name, image = EXCLUDED.image, def_index = EXCLUDED.def_index, api_id = EXCLUDED.api_id
-       RETURNING id`,
+       DO UPDATE SET name = EXCLUDED.name, image = EXCLUDED.image, def_index = EXCLUDED.def_index, api_id = EXCLUDED.api_id`,
       [c.marketHashName, c.name, c.image, c.defIndex, c.id],
-    );
+    ) };
 
     // tier -> item ids, from API data
     const tierItems = new Map<RarityTier, Set<number>>();
@@ -122,16 +117,14 @@ export async function syncCatalog(data: CsgoApiData, defDir: string = CASE_DEFIN
 
     const probabilities = def?.probabilities ?? DEFAULT_PROBABILITIES;
 
-    const caseRow2 = await one<any>(
+    const caseId: number = await insert(
       `INSERT INTO cases (item_id, name, market_hash_name, image, first_sale_date, def_index, probabilities, active)
        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb, TRUE)
        ON CONFLICT (item_id) DO UPDATE SET
          name = EXCLUDED.name, image = EXCLUDED.image, probabilities = EXCLUDED.probabilities,
-         def_index = EXCLUDED.def_index, active = TRUE, updated_at = now()
-       RETURNING id`,
+         def_index = EXCLUDED.def_index, active = TRUE, updated_at = now()`,
       [caseRow.id, c.name, c.marketHashName, c.image, c.firstSaleDate, c.defIndex ?? null, JSON.stringify(probabilities)],
     );
-    const caseId: number = caseRow2.id;
     cases++;
 
     // rebuild pools for this case
@@ -139,7 +132,7 @@ export async function syncCatalog(data: CsgoApiData, defDir: string = CASE_DEFIN
     for (const tier of RARITY_TIERS) {
       const ids = [...tierItems.get(tier)!];
       if (!ids.length) continue;
-      const pool = await one<any>('INSERT INTO case_pools (case_id, tier) VALUES ($1,$2) RETURNING id', [caseId, tier]);
+      const pool = { id: await insert('INSERT INTO case_pools (case_id, tier) VALUES ($1,$2)', [caseId, tier]) };
       pools++;
       for (const itemId of ids) {
         await run('INSERT INTO case_pool_items (case_pool_id, item_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [pool.id, itemId]);

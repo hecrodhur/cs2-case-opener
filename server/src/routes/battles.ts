@@ -1,69 +1,45 @@
-import { FastifyInstance } from 'fastify';
 import { createBattle, joinBattle, cancelBattle, lobbyBattles, myBattles, getBattle } from '../services/battles.js';
+import { route, json, authUser, httpError } from './index.js';
 
-export async function registerBattleRoutes(app: FastifyInstance) {
-  const authed = async (req: any, reply: any) => {
-    const user = await app.getUser(req);
-    if (!user) return reply.code(401).send({ error: 'unauthorized' }), null;
-    if (user.banned) return reply.code(403).send({ error: 'banned' }), null;
-    return user;
-  };
+route.get('/api/battles/lobby', async (req) => {
+  const user = await authUser(req);
+  return json(200, await lobbyBattles(user.id));
+});
 
-  app.get('/api/battles/lobby', async (req: any, reply) => {
-    const user = await authed(req, reply);
-    if (!user) return;
-    return lobbyBattles(user.id);
-  });
+route.get('/api/battles/mine', async (req) => {
+  const user = await authUser(req);
+  return json(200, await myBattles(user.id));
+});
 
-  app.get('/api/battles/mine', async (req: any, reply) => {
-    const user = await authed(req, reply);
-    if (!user) return;
-    return myBattles(user.id);
-  });
+route.post('/api/battles', async (req, ctx) => {
+  const user = await authUser(req);
+  const { caseIds, visibility, opponent } = (req.body ?? {}) as any;
+  return json(
+    200,
+    await createBattle(
+      ctx.hub,
+      user,
+      caseIds ?? [],
+      visibility === 'public' ? 'public' : 'private',
+      opponent === 'bot' ? 'bot' : 'human',
+    ),
+  );
+});
 
-  app.post('/api/battles', async (req: any, reply) => {
-    const user = await authed(req, reply);
-    if (!user) return;
-    const { caseIds, visibility, opponent } = (req.body ?? {}) as any;
-    try {
-      return await createBattle(
-        (app as any).ctx.hub,
-        user,
-        caseIds ?? [],
-        visibility === 'public' ? 'public' : 'private',
-        opponent === 'bot' ? 'bot' : 'human',
-      );
-    } catch (e: any) {
-      return reply.code(e.statusCode ?? 500).send({ error: e.message });
-    }
-  });
+route.post('/api/battles/join', async (req, ctx) => {
+  const user = await authUser(req);
+  const { code } = (req.body ?? {}) as any;
+  return json(200, await joinBattle(ctx.hub, user, String(code ?? '')));
+});
 
-  app.post('/api/battles/join', async (req: any, reply) => {
-    const user = await authed(req, reply);
-    if (!user) return;
-    const { code } = (req.body ?? {}) as any;
-    try {
-      return await joinBattle((app as any).ctx.hub, user, String(code ?? ''));
-    } catch (e: any) {
-      return reply.code(e.statusCode ?? 500).send({ error: e.message });
-    }
-  });
+route.post('/api/battles/:id/cancel', async (req, ctx) => {
+  const user = await authUser(req);
+  return json(200, await cancelBattle(ctx.hub, user, Number(req.params.id)));
+});
 
-  app.post('/api/battles/:id/cancel', async (req: any, reply) => {
-    const user = await authed(req, reply);
-    if (!user) return;
-    try {
-      return await cancelBattle((app as any).ctx.hub, user, Number(req.params.id));
-    } catch (e: any) {
-      return reply.code(e.statusCode ?? 500).send({ error: e.message });
-    }
-  });
-
-  app.get('/api/battles/:id', async (req: any, reply) => {
-    const user = await authed(req, reply);
-    if (!user) return;
-    const b = await getBattle(user, Number(req.params.id));
-    if (!b) return reply.code(404).send({ error: 'not found' });
-    return b;
-  });
-}
+route.get('/api/battles/:id', async (req) => {
+  const user = await authUser(req);
+  const b = await getBattle(user, Number(req.params.id));
+  if (!b) throw httpError(404, 'not found');
+  return json(200, b);
+});

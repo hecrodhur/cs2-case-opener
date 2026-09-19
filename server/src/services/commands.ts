@@ -1,4 +1,4 @@
-import { one, query, run, tx } from '../db.js';
+import { one, query, run, tx, js } from '../db.js';
 import { hashPassword } from './auth.js';
 import { refreshInventorySummary, loadCaseWithPools, rollDrop, persistDrop } from './opening.js';
 import { estimatedValueCents, resolveSteamPrice } from '../util/value.js';
@@ -94,10 +94,10 @@ async function createInstanceFor(user: any, item: any): Promise<any> {
       },
       priceRows,
     );
-    const r = await c.query(
+    const id = await c.insert(
       `INSERT INTO item_instances
          (item_id, user_id, rarity_tier, float_value, wear, stattrak, souvenir, pattern, phase, seed, price_cents)
-       VALUES ($1,$2,$3,$4,$5,FALSE,FALSE,$6,NULL,$7,$8) RETURNING id`,
+       VALUES ($1,$2,$3,$4,$5,FALSE,FALSE,$6,NULL,$7,$8)`,
       [item.id, user.id, item.rarity_tier, floatValue, wear, item.pattern, seed, valueCents],
     );
     await c.query(
@@ -107,7 +107,8 @@ async function createInstanceFor(user: any, item: any): Promise<any> {
          total_value_cents = inventories.total_value_cents + $2, updated_at = now()`,
       [user.id, valueCents],
     );
-    return r.rows[0];
+    const row = await c.query('SELECT * FROM item_instances WHERE id = $1', [id]);
+    return row.rows[0];
   });
 }
 
@@ -413,7 +414,7 @@ export async function runAdminCommand(admin: { id: number }, raw: string): Promi
         if (!caseName) return { ok: false, output: 'usage: /caseinfo <case name>' };
         const c = await one<any>(`SELECT * FROM cases WHERE name ILIKE $1 LIMIT 1`, [`%${caseName}%`]);
         if (!c) return { ok: false, output: `case "${caseName}" not found` };
-        const pools = c.probabilities ?? {};
+        const pools = js(c.probabilities) ?? {};
         const counts = await query<any>(
           'SELECT p.tier, COUNT(DISTINCT pi.item_id)::int AS n FROM case_pools p JOIN case_pool_items pi ON pi.case_pool_id = p.id WHERE p.case_id = $1 GROUP BY p.tier',
           [c.id],

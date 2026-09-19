@@ -1,26 +1,29 @@
-export const config = {
-  port: Number(process.env.PORT ?? 3000),
-  host: process.env.HOST ?? '0.0.0.0',
-  databaseUrl: process.env.DATABASE_URL ?? null,
-  pgDataDir: process.env.PG_DATA_DIR ?? new URL('../.pg-data', import.meta.url).pathname,
-  pgPort: Number(process.env.PG_PORT ?? 54330),
-  sessionDays: Number(process.env.SESSION_DAYS ?? 30),
-  adminUsername: process.env.ADMIN_USERNAME ?? 'admin',
-  adminPassword: process.env.ADMIN_PASSWORD ?? 'hola67',
-  csgoApiBase: process.env.CSGO_API_BASE ?? 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en',
-  steamMarketUrl: process.env.STEAM_MARKET_URL ?? 'https://steamcommunity.com/market/search/render',
-  steamMinIntervalMs: Number(process.env.STEAM_MIN_INTERVAL_MS ?? 1500),
-  priceStaleHours: Number(process.env.PRICE_STALE_HOURS ?? 6),
-  welcomeBalanceCents: Number(process.env.WELCOME_BALANCE_CENTS ?? 10000),
-  // multiplier for rate limits (>1 = looser, 0 = disabled); useful for load/tests
-  rateLimitScale: Number(process.env.RATE_LIMIT_SCALE ?? 1),
-  // virtual cents per 1 USD of Steam lowest ask, used to derive case cost from price
-  priceCostRatio: Number(process.env.PRICE_COST_RATIO ?? 1),
-  // comma-separated list of allowed frontend origins for CORS (production: Cloudflare Pages)
-  corsOrigins: (process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
-};
+const env = typeof process !== 'undefined' && process.env ? (process.env as Record<string, string | undefined>) : ({} as Record<string, string | undefined>);
 
-export type Config = typeof config;
+/**
+ * Static tuning knobs. Cloudflare-specific values (DB, admin password, seed
+ * flag) arrive as bindings on env (see Env in worker.ts) and are applied via
+ * setAdminPassword() at request time.
+ */
+export const config = {
+  corsOrigins: (env.FRONTEND_ORIGIN ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  rateLimit: { windowMs: 60_000, auth: 20, api: 240, admin: 50 },
+  scale: Number(env.RATE_LIMIT_SCALE ?? 1),
+  welcomeBalanceCents: 25_000,
+  sessionDays: Number(env.SESSION_DAYS ?? 30),
+  priceCostRatio: 1.0,
+  stattrakChance: 0.1,
+  souvenirChance: 0.05,
+  steamMinIntervalMs: 1_500,
+  steamMarketUrl: 'https://steamcommunity.com/market/search/render/',
+  csgoApiBase: env.CSGO_API_BASE ?? 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en',
+  csgoApiBaseMirror: env.CSGO_API_BASE_MIRROR ?? 'https://cdn.jsdelivr.net/gh/ByMykel/CSGO-API@main/public/api/en',
+} as const;
+
+let adminPassword = env.ADMIN_PASSWORD ?? 'hola67';
+export function setAdminPassword(p: string) {
+  adminPassword = p;
+}
+export function getAdminPassword(): string {
+  return adminPassword;
+}

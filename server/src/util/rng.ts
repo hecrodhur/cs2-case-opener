@@ -1,68 +1,62 @@
-import { randomBytes, randomInt } from 'node:crypto';
-import type { RarityTier, Probabilities, Wear } from 'shared';
-import { WEAR_RANGES } from 'shared';
-
 /**
- * RNG helpers. All draws use node:crypto CSPRNG (uniform, no modulo bias
- * via randomInt). The server decides every prize; the client never rolls.
+ * The RNG is server-side only: the client never rolls anything, it only plays
+ * back the committed result (see the seed field on openings for auditability).
+ * crypto.getRandomValues is available in the Workers runtime and in Node.
  */
+import type { RarityTier, Probabilities } from 'shared';
+import { RARITY_TIERS } from 'shared';
 
-export function rollInt(n: number): number {
-  return randomInt(n);
+function randFloat(): number {
+  // 32 bits of entropy, plenty for gameplay rolls
+  const buf = crypto.getRandomValues(new Uint32Array(1));
+  return buf[0] / 4294967296;
 }
 
-export function makeSeed(): string {
-  return randomBytes(16).toString('hex');
+export function rollRarity(probs: Probabilities, emptyTiers: Set<RarityTier>): RarityTier {
+  const usable = RARITY_TIERS.filter((t) => !emptyTiers.has(t));
+  const total = usable.reduce((s, t) => s + (probs[t] ?? 0), 0);
+  if (total <= 0) throw new Error('no usable tier probabilities');
+  let r = randFloat() * total;
+  for (const t of usable) {
+    r -= probs[t] ?? 0;
+    if (r <= 0) return t;
+  }
+  return usable[usable.length - 1];
+}
+
+/** uniform float in [min, max] */
+export function rollFloat(min: number, max: number): number {
+  return min + (max - min) * randFloat();
 }
 
 export function rollBool(p: number): boolean {
-  return randomInt(1_000_000) / 1_000_000 < p;
+  return randFloat() < p;
 }
 
-/**
- * Weighted rarity draw. Tiers without probability or with an empty pool are
- * dropped and the rest renormalised. `emptyTiers` tells which tiers have no
- * items for this case.
- */
-export function rollRarity(
-  probs: Probabilities,
-  emptyTiers: ReadonlySet<RarityTier> = new Set(),
-): RarityTier {
-  const weights: [RarityTier, number][] = [];
-  let total = 0;
-  (Object.keys(probs) as RarityTier[]).forEach((tier) => {
-    const p = probs[tier] ?? 0;
-    if (p <= 0 || emptyTiers.has(tier)) return;
-    weights.push([tier, p]);
-    total += p;
-  });
-  if (total <= 0) throw new Error('case has no valid rarity probabilities');
-  let r = randomInt(10_000_000); // 0.0001% resolution
-  const scale = 10_000_000 / total;
-  for (const [tier, p] of weights) {
-    r -= Math.round(p * scale);
-    if (r < 0) return tier;
-  }
-  return weights[weights.length - 1][0];
+export function rollInt(n: number): number {
+  return Math.floor(randFloat() * n);
 }
 
-/** Uniform float in [min, max] with 5-decimal precision. */
-export function rollFloat(min: number, max: number): number {
-  const span = Math.max(0, max - min);
-  const raw = min + (randomInt(1_000_000_000) / 1_000_000_000) * span;
-  return Math.round(raw * 100_000) / 100_000;
+export function makeSeed(): string {
+  return randomHex(16);
 }
 
-export function wearFromFloat(f: number): Wear {
-  for (const wear of Object.keys(WEAR_RANGES) as Wear[]) {
-    const [lo, hi] = WEAR_RANGES[wear];
-    if (f >= lo && f < hi) return wear;
-  }
-  return 'Battle-Scarred';
+function randomHex(bytes: number): string {
+  const b = crypto.getRandomValues(new Uint8Array(bytes));
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, '0');
+  return s;
 }
 
-/** Pick a random element; returns null for empty arrays. */
-export function rollOf<T>(arr: T[]): T | null {
-  if (!arr.length) return null;
-  return arr[randomInt(arr.length)];
+export const WEAR_RANGES: { name: string; min: number; max: number }[] = [
+  { name: 'Factory New', min: 0.0, max: 0.07 },
+  { name: 'Minimal Wear', min: 0.07, max: 0.15 },
+  { name: 'Field-Tested', min: 0.15, max: 0.38 },
+  { name: 'Well-Worn', min: 0.38, max: 0.45 },
+  { name: 'Battle-Scarred', min: 0.45, max: 1.0 },
+];
+
+export function wearFromFloat(f: number): string {
+  const w = WEAR_RANGES.find((r) => f >= r.min && f < r.max);
+  return w ? w.name : 'Battle-Scarred';
 }

@@ -1,4 +1,4 @@
-import { run, one } from '../db.js';
+import { run, one, js } from '../db.js';
 import { RealtimeHub } from './realtime.js';
 
 export async function pushNotification(
@@ -16,5 +16,5 @@ export async function pushNotification(
     'SELECT id, kind, title, body, meta, read, created_at FROM notifications WHERE user_id = $1 ORDER BY id DESC LIMIT 1',
     [userId],
   );
-  if (n) hub.notifyUser(userId, 'notify', n);
+  if (n) hub.notifyUser(userId, 'notify', { ...n, id: Number(n.id), read: Boolean(n.read), meta: js(n.meta) ?? null });
 }

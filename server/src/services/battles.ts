@@ -1,5 +1,4 @@
-import { randomBytes } from 'node:crypto';
-import { one, query, run, tx } from '../db.js';
+import { one, query, run, tx, js } from '../db.js';
 import { rollDrop, persistDrop, httpError, refreshInventorySummary, type CaseWithPools } from './opening.js';
 import { RealtimeHub } from './realtime.js';
 import { pushNotification } from './notify.js';
@@ -8,7 +7,7 @@ const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
 const MAX_TIEBREAKS = 3;
 
 function makeBattleCode(): string {
-  const bytes = randomBytes(6);
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
   let s = '';
   for (let i = 0; i < 6; i++) s += CODE_CHARS[bytes[i] % CODE_CHARS.length];
   return s;
@@ -49,11 +48,11 @@ function battleView(b: any): BattleView {
         : null,
     opponentType: isBot ? 'bot' : 'human',
     cases: (b.case_list as any[]) ?? [],
-    caseIds: (b.case_ids as number[]) ?? [],
+    caseIds: (Array.isArray(b.case_ids) ? b.case_ids : js<number[]>(b.case_ids)) ?? [],
     costCents: Number(b.cost_cents),
     visibility: b.visibility,
     status: b.status,
-    rounds: b.rounds ?? [],
+    rounds: (Array.isArray(b.rounds) ? b.rounds : js<any[]>(b.rounds)) ?? [],
     totalA: Number(b.total_a_cents),
     totalB: Number(b.total_b_cents),
     tiebreaks: b.tiebreaks,
@@ -67,20 +66,35 @@ function battleView(b: any): BattleView {
 
 const BASE_SELECT = `
   SELECT b.*, u1.username AS creator_username, u1.avatar AS creator_avatar,
-         u2.username AS opponent_username, u2.avatar AS opponent_avatar,
-         (SELECT COALESCE(json_agg(j), '[]'::json) FROM (
-            SELECT c.id, c.name, c.image, c.cost_cents, ord.n
-            FROM unnest(b.case_ids) WITH ORDINALITY AS ord(cid, n)
-            JOIN cases c ON c.id = ord.cid
-            ORDER BY ord.n) j) AS case_list
+         u2.username AS opponent_username, u2.avatar AS opponent_avatar
   FROM battles b
   JOIN users u1 ON u1.id = b.creator_id
   LEFT JOIN users u2 ON u2.id = b.opponent_id`;
 
+type Querier = { query(sql: string, params?: any[]): Promise<{ rows: any[] }> };
+
+async function caseListFor(q: Querier, caseIds: number[]): Promise<any[]> {
+  const out: any[] = [];
+  for (const cid of caseIds) {
+    const r = await q.query('SELECT id, name, image, cost_cents FROM cases WHERE id = $1', [cid]);
+    if (r.rows[0]) out.push(r.rows[0]);
+  }
+  return out;
+}
+
+/** case_ids is stored as JSON text; normalize to {case_ids: number[], case_list: row[]} */
+async function decorate(q: Querier, b: any): Promise<any> {
+  const caseIds: number[] = Array.isArray(b.case_ids) ? b.case_ids : (js<number[]>(b.case_ids) ?? []);
+  const case_list = await caseListFor(q, caseIds);
+  return { ...b, case_ids: caseIds, case_list };
+}
+
+const globalQ: Querier = { query: (sql, params) => query<any>(sql, params).then((rows) => ({ rows })) };
+
 async function loadBattleFull(client: any, idOrCode: number | string, byCode: boolean): Promise<any | null> {
   const where = byCode ? 'b.code = $1' : 'b.id = $1';
   const r = await client.query(`${BASE_SELECT} WHERE ${where}`, [idOrCode]);
-  return r.rows[0] ?? null;
+  return r.rows[0] ? await decorate(client, r.rows[0]) : null;
 }
 
 async function loadCaseForTx(client: any, caseId: number): Promise<CaseWithPools | null> {
@@ -92,7 +106,7 @@ async function loadCaseForTx(client: any, caseId: number): Promise<CaseWithPools
   )).rows;
   const pools: Record<string, number[]> = { mil_spec: [], restricted: [], classified: [], covert: [], rare_special: [] };
   for (const r of rows) if (r.tier in pools) pools[r.tier].push(r.id);
-  return { ...c, costCents: c.cost_cents == null ? null : Number(c.cost_cents), pools: pools as any };
+  return { ...c, probabilities: js(c.probabilities) ?? {}, costCents: c.cost_cents == null ? null : Number(c.cost_cents), pools: pools as any };
 }
 
 function fmt(cents: number): string {
@@ -127,13 +141,12 @@ async function generateBattle(client: any, caseDefs: CaseWithPools[], aId: numbe
     const ra = await persistDrop(client, aId, c, da, 0);
     let instBId: number;
     if (botSideB) {
-      const r = await client.query(
+      instBId = await client.insert(
         `INSERT INTO item_instances
            (item_id, user_id, rarity_tier, float_value, wear, stattrak, souvenir, pattern, phase, seed, price_cents, case_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [db.item.id, bId, db.tier, db.floatValue, db.wear, db.stattrak, db.souvenir, db.item.pattern, db.phase, db.seed, db.priceCents, c.id],
       );
-      instBId = r.rows[0].id;
     } else {
       instBId = (await persistDrop(client, bId, c, db, 0)).instanceId;
     }
@@ -194,25 +207,30 @@ export async function createBattle(
 
   let botResult: { totalA: number; totalB: number } | null = null;
   const view = await tx(async (client) => {
-    const u = await client.query('SELECT balance_cents, banned FROM users WHERE id = $1 FOR UPDATE', [uid]);
+    const u = await client.query('SELECT balance_cents, banned FROM users WHERE id = $1', [uid]);
     if (!u.rows.length) throw httpError(401, 'user gone');
     if (u.rows[0].banned) throw httpError(403, 'banned');
-    if (Number(u.rows[0].balance_cents) < total) throw httpError(400, 'insufficient balance');
-    await client.query('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1', [uid, total]);
+    const balBefore = Number(u.rows[0].balance_cents);
+    const n = await client.update('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1 AND balance_cents >= $2', [uid, total]);
+    if (!n) throw httpError(400, 'insufficient balance');
     await client.query(
       'INSERT INTO transactions (user_id, kind, amount_cents, balance_after_cents, ref) VALUES ($1,$2,$3,$4,$5)',
-      [uid, 'battle_create', -total, Number(u.rows[0].balance_cents) - total, 'battle:pending'],
+      [uid, 'battle_create', -total, balBefore - total, 'battle:pending'],
     );
     let code = makeBattleCode();
     let b: any = null;
     for (let i = 0; i < 5 && !b; i++) {
-      const ins = await client.query(
-        `INSERT INTO battles (code, creator_id, case_ids, cost_cents, visibility, opponent_type)
-         VALUES ($1,$2,$3::bigint[],$4,$5,$6) RETURNING id`,
-        [code, uid, ids, total, visibility, isBot ? 'bot' : 'human'],
-      );
-      if (ins.rows.length) b = await loadBattleFull(client, ins.rows[0].id, false);
-      code = makeBattleCode();
+      try {
+        const id = await client.insert(
+          `INSERT INTO battles (code, creator_id, case_ids, cost_cents, visibility, opponent_type)
+           VALUES ($1,$2,$3::bigint[],$4,$5,$6)`,
+          [code, uid, ids, total, visibility, isBot ? 'bot' : 'human'],
+        );
+        b = await loadBattleFull(client, id, false);
+      } catch (e) {
+        if (i === 4) throw e;
+        code = makeBattleCode();
+      }
     }
     if (!b) throw httpError(500, 'could not create battle');
 
@@ -284,14 +302,21 @@ export async function joinBattle(hub: RealtimeHub, user: { id: number }, code: s
     if (b.opponent_id != null) throw httpError(400, 'battle is full');
     const cost = Number(b.cost_cents);
 
-    const u = await client.query('SELECT balance_cents, banned FROM users WHERE id = $1 FOR UPDATE', [joinerId]);
+    const u = await client.query('SELECT balance_cents, banned FROM users WHERE id = $1', [joinerId]);
     if (!u.rows.length) throw httpError(401, 'user gone');
     if (u.rows[0].banned) throw httpError(403, 'banned');
-    if (Number(u.rows[0].balance_cents) < cost) throw httpError(400, 'insufficient balance');
-    await client.query('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1', [joinerId, cost]);
+    const balBefore = Number(u.rows[0].balance_cents);
+    // flip the slot first: exactly one joiner can win it
+    const slot = await client.update('UPDATE battles SET opponent_id = $2 WHERE id = $1 AND opponent_id IS NULL', [b.id, joinerId]);
+    if (!slot) throw httpError(400, 'battle is full');
+    const n = await client.update('UPDATE users SET balance_cents = balance_cents - $2, updated_at = now() WHERE id = $1 AND balance_cents >= $2', [joinerId, cost]);
+    if (!n) {
+      await client.update('UPDATE battles SET opponent_id = NULL WHERE id = $1', [b.id]);
+      throw httpError(400, 'insufficient balance');
+    }
     await client.query(
       'INSERT INTO transactions (user_id, kind, amount_cents, balance_after_cents, ref) VALUES ($1,$2,$3,$4,$5)',
-      [joinerId, 'battle_join', -cost, Number(u.rows[0].balance_cents) - cost, `battle:${b.id}`],
+      [joinerId, 'battle_join', -cost, balBefore - cost, `battle:${b.id}`],
     );
 
     const caseDefs: CaseWithPools[] = [];
@@ -327,8 +352,8 @@ export async function joinBattle(hub: RealtimeHub, user: { id: number }, code: s
     return { battleId: Number(b.id), aId, bId, winnerId, rewardCents, totalA: gen.totalA, totalB: gen.totalB, tiebreaks: gen.tiebreaks };
   });
 
-  const full = await one<any>(`${BASE_SELECT} WHERE b.id = $1`, [out.battleId]);
-  const view = battleView(full);
+  const full = (await query<any>(`${BASE_SELECT} WHERE b.id = $1`, [out.battleId]))[0];
+  const view = battleView(full ? await decorate(globalQ, full) : null);
   const text = (side: 'a' | 'b') => {
     const won = out.winnerId != null && Number(out.winnerId) === (side === 'a' ? out.aId : out.bId);
     const mine = side === 'a' ? out.totalA : out.totalB;
@@ -359,13 +384,15 @@ export async function cancelBattle(hub: RealtimeHub, user: { id: number }, battl
     if (Number(row.creator_id) !== Number(user.id)) throw httpError(403, 'only the creator can cancel');
     if (row.status !== 'waiting') throw httpError(400, 'battle is not open');
     const cost = Number(row.cost_cents);
-    const u = await client.query('SELECT balance_cents FROM users WHERE id = $1 FOR UPDATE', [user.id]);
+    const u = await client.query('SELECT balance_cents FROM users WHERE id = $1', [user.id]);
+    // only the first cancel wins the flip; a join cannot sneak in between
+    const flipped = await client.update("UPDATE battles SET status = 'cancelled', finished_at = now() WHERE id = $1 AND status = 'waiting'", [battleId]);
+    if (!flipped) throw httpError(400, 'battle is not open');
     await client.query('UPDATE users SET balance_cents = balance_cents + $2, updated_at = now() WHERE id = $1', [user.id, cost]);
     await client.query(
       'INSERT INTO transactions (user_id, kind, amount_cents, balance_after_cents, ref) VALUES ($1,$2,$3,$4,$5)',
       [user.id, 'battle_cancel_refund', cost, Number(u.rows[0].balance_cents) + cost, `battle:${battleId}`],
     );
-    await client.query(`UPDATE battles SET status = 'cancelled', finished_at = now() WHERE id = $1`, [battleId]);
     return { id: battleId, code: row.code, cost };
   });
   await run('INSERT INTO audit_logs (actor_user_id, action, target, detail) VALUES ($1,$2,$3,$4::jsonb)', [
@@ -380,7 +407,9 @@ export async function lobbyBattles(userId: number): Promise<BattleView[]> {
     `${BASE_SELECT} WHERE b.status = 'waiting' AND b.opponent_type = 'human' AND (b.visibility = 'public' OR b.creator_id = $1) ORDER BY b.created_at DESC LIMIT 100`,
     [userId],
   );
-  return rows.map(battleView);
+  const out: BattleView[] = [];
+  for (const r of rows) out.push(battleView(await decorate(globalQ, r)));
+  return out;
 }
 
 export async function myBattles(userId: number): Promise<BattleView[]> {
@@ -388,7 +417,9 @@ export async function myBattles(userId: number): Promise<BattleView[]> {
     `${BASE_SELECT} WHERE b.creator_id = $1 OR b.opponent_id = $1 ORDER BY b.created_at DESC LIMIT 100`,
     [userId],
   );
-  return rows.map(battleView);
+  const out: BattleView[] = [];
+  for (const r of rows) out.push(battleView(await decorate(globalQ, r)));
+  return out;
 }
 
 export async function getBattle(user: { id: number }, battleId: number): Promise<BattleView | null> {
@@ -396,5 +427,5 @@ export async function getBattle(user: { id: number }, battleId: number): Promise
     `${BASE_SELECT} WHERE b.id = $1 AND (b.creator_id = $2 OR b.opponent_id = $2)`,
     [battleId, user.id],
   );
-  return rows.length ? battleView(rows[0]) : null;
+  return rows.length ? battleView(await decorate(globalQ, rows[0])) : null;
 }
