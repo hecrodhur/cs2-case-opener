@@ -1,17 +1,27 @@
 import { FastifyInstance } from 'fastify';
 import { userFromToken } from '../services/auth.js';
+import { config } from '../config.js';
 
 export async function registerRealtimeRoute(app: FastifyInstance) {
   app.get('/api/realtime', async (req, reply) => {
     const token = ((req.query as any).token as string | undefined) ?? extractBearer(req);
     const user = token ? await userFromToken(token) : null;
 
-    reply.raw.writeHead(200, {
+    const headers: Record<string, string> = {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
-    });
+    };
+    // SSE writes straight to the raw socket, bypassing @fastify/cors; add the
+    // CORS headers manually so cross-origin EventSource (Cloudflare Pages) works
+    const origin = req.headers.origin;
+    if (typeof origin === 'string' && config.corsOrigins.includes(origin)) {
+      headers['Access-Control-Allow-Origin'] = origin;
+      headers['Vary'] = 'Origin';
+    }
+
+    reply.raw.writeHead(200, headers);
     reply.raw.write('retry: 3000\n\n');
     const send = (event: string, data: string) => {
       reply.raw.write(`event: ${event}\ndata: ${data}\n\n`);

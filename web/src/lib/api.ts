@@ -1,5 +1,8 @@
 const TOKEN_KEY = 'cs2co_token';
 
+/** Base URL of the API. Set VITE_API_URL at build time for production (Cloudflare Pages); empty in dev (Vite proxy). */
+export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+
 let token: string | null = localStorage.getItem(TOKEN_KEY);
 
 export function getToken(): string | null {
@@ -25,7 +28,7 @@ async function request<T = any>(path: string, opts: { method?: string; body?: an
   const headers: Record<string, string> = {};
   if (opts.body != null) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(path, {
+  const res = await fetch(API_BASE + path, {
     method: opts.method ?? (opts.body != null ? 'POST' : 'GET'),
     headers,
     body: opts.body != null ? JSON.stringify(opts.body) : undefined,

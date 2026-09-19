@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../store';
+import { API_BASE, getToken } from '../lib/api';
 
 export interface Drop {
   openingId: number;
@@ -19,9 +20,9 @@ let authListenerInstalled = false;
 
 function connect() {
   if (es) return;
-  const token = localStorage.getItem('token');
+  const token = getToken();
   if (!token) return;
-  es = new EventSource(`/api/realtime?token=${encodeURIComponent(token)}`);
+  es = new EventSource(`${API_BASE}/api/realtime?token=${encodeURIComponent(token)}`);
   es.addEventListener('ticker', (e: MessageEvent) => {
     try {
       const d = JSON.parse(e.data) as Drop;
@@ -46,7 +47,7 @@ function ensureAuthListener() {
   if (authListenerInstalled) return;
   authListenerInstalled = true;
   window.addEventListener('auth-changed', () => {
-    const hasToken = Boolean(localStorage.getItem('token'));
+    const hasToken = Boolean(getToken());
     if (!hasToken) closeSocket();
     else if (listeners > 0) connect();
   });

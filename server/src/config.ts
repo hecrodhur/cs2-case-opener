@@ -16,6 +16,11 @@ export const config = {
   rateLimitScale: Number(process.env.RATE_LIMIT_SCALE ?? 1),
   // virtual cents per 1 USD of Steam lowest ask, used to derive case cost from price
   priceCostRatio: Number(process.env.PRICE_COST_RATIO ?? 1),
+  // comma-separated list of allowed frontend origins for CORS (production: Cloudflare Pages)
+  corsOrigins: (process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 };
 
 export type Config = typeof config;

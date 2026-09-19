@@ -15,8 +15,10 @@ import { refreshPricesForCases } from './services/priceJobs.js';
 async function bootDatabase(): Promise<pg.Pool> {
   let pool: pg.Pool;
   if (config.databaseUrl) {
+    console.log('[db] using external PostgreSQL from DATABASE_URL');
     pool = new pg.Pool({ connectionString: config.databaseUrl, max: 20 });
   } else {
+    console.log('[db] DATABASE_URL not set, using embedded Postgres (dev only)');
     const EP = (await import('embedded-postgres')).default;
     const ep = new EP({
       databaseDir: config.pgDataDir,
@@ -34,7 +36,7 @@ async function bootDatabase(): Promise<pg.Pool> {
       if (!hasCluster) await ep.initialise();
       await ep.start();
     }
-    // use our own pg client to keep boot transparent
+      // use our own pg client to keep boot transparent
     const client = new pg.Client({ user: 'postgres', password: 'cs2case', port: config.pgPort, host: '127.0.0.1', database: 'postgres' });
     try {
       await client.connect();

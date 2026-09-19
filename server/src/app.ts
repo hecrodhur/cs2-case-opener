@@ -53,7 +53,14 @@ export async function buildApp(deps: { pool: any; ctx: AppContext; webDist?: str
     await app.register(staticPlugin, { root: deps.webDist, index: ['index.html'] });
   }
 
-  await app.register(cors, { origin: true, credentials: true });
+  // explicit origin allow-list (FRONTEND_ORIGIN env); never origin:true in production
+  await app.register(cors, {
+    origin: config.corsOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  });
+
+  app.get('/api/health', async () => ({ ok: true }));
 
   const limit = makeRateLimiter();
   app.addHook('onRequest', async (req, reply) => {
