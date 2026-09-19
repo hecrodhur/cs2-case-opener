@@ -1,0 +1,10 @@
+node_modules
+dist
+*.local
+server/.pg-data
+server/.pg-cache
+web/dist
+.env
+coverage
+.server.pid
+logs/

@@ -1,0 +1,47 @@
+import puppeteer from 'puppeteer-core';
+const BASE = 'http://localhost:3000';
+const ts = Date.now().toString(36);
+const userA = 'dbgA_' + ts;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const browser = await puppeteer.launch({ executablePath: '/usr/bin/chromium', headless: 'new', args: ['--no-sandbox','--disable-gpu','--disable-dev-shm-usage'] });
+const ctx = await browser.createBrowserContext();
+const page = await ctx.newPage();
+page.on('console', (m) => { if (m.type() === 'error') console.log('console-err:', m.text().slice(0, 300)); });
+page.on('pageerror', (e) => console.log('pageerror:', e.message));
+page.on('response', (r) => { if (r.url().includes('/api/') && r.status() >= 400) console.log('http', r.status(), r.url()); });
+const page2 = await ctx.newPage();
+await page2.goto(BASE + '/auth', { waitUntil: 'domcontentloaded' });
+await sleep(1200);
+await page2.click('.link-btn');
+await sleep(400);
+const inputs = await page2.$$('.auth-card input');
+await inputs[0].click(); await inputs[0].type(userA, { delay: 2 });
+await inputs[1].type('secret123', { delay: 2 });
+await page2.click('.auth-card button[type="submit"]');
+await sleep(1500);
+console.log('registered, url:', page2.url());
+// visit a couple of pages first (like e2e does)
+await page2.goto(BASE + '/friends', { waitUntil: 'domcontentloaded' });
+await sleep(1200);
+await page2.goto(BASE + '/leaderboard', { waitUntil: 'domcontentloaded' });
+await sleep(1200);
+// now admin
+await page2.goto(BASE + '/admin', { waitUntil: 'domcontentloaded' });
+await sleep(1500);
+const gi = await page2.$('.admin-gate input');
+console.log('gate input:', !!gi);
+await gi.click();
+await gi.type('hola67', { delay: 2 });
+await sleep(300);
+const btnState = await page2.evaluate(() => {
+  const b = document.querySelector('.admin-gate button');
+  return { disabled: b.disabled, text: b.textContent };
+});
+console.log('unlock btn:', JSON.stringify(btnState));
+await page2.evaluate(() => document.querySelector('.admin-gate button').click());
+await sleep(3000);
+const tabs = await page2.evaluate(() => [...document.querySelectorAll('.tabs .tab')].map((t) => t.textContent.trim()));
+console.log('tabs:', JSON.stringify(tabs));
+const body = (await page2.evaluate(() => document.body.innerText)).slice(0, 300);
+console.log('body:', body.replace(/\n/g, ' | '));
+await browser.close();

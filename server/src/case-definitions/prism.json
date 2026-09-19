@@ -1,0 +1,8 @@
+{
+  "case": "Prism Case",
+  "probabilities": { "mil_spec": 79.92, "restricted": 15.98, "classified": 3.2, "covert": 0.64, "rare_special": 0.26 },
+  "pools": {
+    "rare_special": ["★ Karambit | Vanilla", "★ M9 Bayonet | Vanilla"]
+  },
+  "note": "Rare Special pool defined manually. Requires manual validation."
+}

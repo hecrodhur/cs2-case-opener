@@ -1,0 +1,14 @@
+{
+  "case": "Kilowatt Case",
+  "probabilities": { "mil_spec": 79.92, "restricted": 15.98, "classified": 3.2, "covert": 0.64, "rare_special": 0.26 },
+  "pools": {
+    "rare_special": [
+      "★ Butterfly Knife | Fade",
+      "★ Karambit | Slaughter",
+      "★ Sport Gloves | Pandora's Box",
+      "★ Specialist Gloves | Emerald Web",
+      "★ Sport Gloves | Superconductor"
+    ]
+  },
+  "note": "Rare Special pool defined manually; API only lists Kukri variants in contains_rare. Requires manual validation against in-game case contents."
+}

@@ -1,0 +1,21 @@
+{
+  "name": "cs2-case-opener",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web \"npm run dev -w server\" \"npm run dev -w web\"",
+    "build": "npm run build -w shared && npm run build -w server && npm run build -w web",
+    "start": "node server/dist/index.js",
+    "test": "npm run test -w server",
+    "sync": "node --import tsx server/src/cli/sync.ts",
+    "db:migrate": "node --import tsx server/src/cli/migrate.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

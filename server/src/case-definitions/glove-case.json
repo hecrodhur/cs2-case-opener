@@ -1,0 +1,11 @@
+{
+  "case": "Glove Case",
+  "probabilities": { "mil_spec": 79.92, "restricted": 15.98, "classified": 3.2, "covert": 0.64, "rare_special": 0.26 },
+  "pools": {
+    "rare_special": [
+      "★ Sport Gloves | Pandora's Box",
+      "★ Specialist Gloves | Crimson Weave"
+    ]
+  },
+  "note": "Glove Case: gloves come from API contains_rare (Covert tier by default). Two documented Rare Specials added manually. Requires manual validation."
+}
