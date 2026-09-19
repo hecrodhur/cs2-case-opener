@@ -3,10 +3,6 @@ main = "src/worker.ts"
 compatibility_date = "2025-06-01"
 compatibility_flags = ["nodejs_compat"]
 
-[vars]
-# dev-only admin bootstrap password; production must set this as a secret
-ADMIN_PASSWORD = "hola67"
-
 # D1 database (create once: wrangler d1 create cs2_case_opener_d1, then
 # run `npm run db:init` to apply the SQL migrations locally)
 [[d1_databases]]
@@ -29,6 +25,7 @@ new_sqlite_classes = ["Realtime"]
 directory = "../web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
 
 # Background jobs (replaces setInterval)
 [cron_triggers]
