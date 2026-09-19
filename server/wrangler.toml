@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "cs2-case-opener"
-database_id = "11111111-1111-4111-8111-111111111111"
+database_id = "3bafcec3-1d62-456d-9b14-5c5698ae0da0"
 
 # Durable Object: realtime fan-out (WebSocket)
 [durable_objects]
