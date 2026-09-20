@@ -1,5 +1,5 @@
 import type { Env } from './env.js';
-import { setAdminPassword } from './config.js';
+import { setAdminPassword, setPricempireKey } from './config.js';
 import { runWithDb } from './db.js';
 import { seedAdmin } from './services/auth.js';
 import { RealtimeHub } from './services/realtime.js';
@@ -24,12 +24,20 @@ function makeCtx(env: Env): HandlerCtx {
   const hub = new RealtimeHub(env.RT);
   const prices = new PriceSyncService();
   prices.setHub(hub);
-  return { env, hub, prices };
+  return {
+    env,
+    hub,
+    prices,
+    waitUntil: (p) => {
+      void p.catch(() => {}); // node/tests: let background work run without crashing
+    },
+  };
 }
 
 export default {
-  async fetch(request: Request, env: Env, _ctx: unknown): Promise<Response> {
+  async fetch(request: Request, env: Env, _ctx: { waitUntil?: (p: Promise<unknown>) => void }): Promise<Response> {
     if (env.ADMIN_PASSWORD) setAdminPassword(env.ADMIN_PASSWORD);
+    if (env.PRICEMPIRE_API_KEY) setPricempireKey(env.PRICEMPIRE_API_KEY);
     const url = new URL(request.url);
     const path = url.pathname;
     return runWithDb(env.DB, async () => {
@@ -44,6 +52,9 @@ export default {
       }
       if (path.startsWith('/api/')) {
         const ctx = makeCtx(env);
+        if (_ctx?.waitUntil) {
+          ctx.waitUntil = (p) => _ctx.waitUntil!(p.catch(() => {}));
+        }
         if (rateLimited(request, path)) {
           return new Response(JSON.stringify({ error: 'rate limit exceeded' }), {
             status: 429,
@@ -51,7 +62,11 @@ export default {
           });
         }
         try {
-          return await dispatch(request, ctx);
+          const res = await dispatch(request, ctx);
+          // Keep the price queue running after the response is sent so a sync
+          // trigger never holds the request open for minutes of Steam fetches.
+          if (ctx.prices.pending > 0) ctx.waitUntil(ctx.prices.run());
+          return res;
         } catch (e: any) {
           const status = Number(e.statusCode) >= 400 ? Number(e.statusCode) : 500;
           return new Response(JSON.stringify({ error: e.message ?? 'internal error' }), {
@@ -81,6 +96,7 @@ export default {
 
   async cron(_event: { scheduledTime: Date }, env: Env): Promise<void> {
     if (env.ADMIN_PASSWORD) setAdminPassword(env.ADMIN_PASSWORD);
+    if (env.PRICEMPIRE_API_KEY) setPricempireKey(env.PRICEMPIRE_API_KEY);
     const ctx = makeCtx(env);
     await runWithDb(env.DB, async () => {
       await refreshPricesForCases(ctx.prices, 60);

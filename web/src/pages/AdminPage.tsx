@@ -110,6 +110,12 @@ export default function AdminPage() {
     queryFn: () => api.get<any>('/api/admin/audit?limit=50'),
     enabled: me?.role === 'admin' && tab === 'audit',
   });
+  const priceQ = useQuery({
+    queryKey: ['admin', 'prices'],
+    queryFn: () => api.get<any>('/api/admin/prices/stats'),
+    enabled: me?.role === 'admin' && tab === 'overview',
+    refetchInterval: 10_000,
+  });
   const settingsQ = useQuery({
     queryKey: ['admin', 'settings'],
     queryFn: async () => {
@@ -192,7 +198,26 @@ export default function AdminPage() {
             <button className="btn btn-ghost" onClick={() => act(() => api.post('/api/admin/sync/prices', {}), 'Price sync queued')}>
               Sync prices
             </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                if (!confirm('Invalidar el coste de TODAS las cajas activas y re-sincronizar desde Steam?\n\nNo toca balances, inventarios, aperturas ni battles.')) return;
+                void act(() => api.post('/api/admin/prices/repair', {}), 'Reparacion lanzada: costes invalidados, re-sincronizando desde Steam');
+              }}
+            >
+              Repair case prices
+            </button>
           </div>
+          {priceQ.data && (
+            <div className="tier-breakdown">
+              <div className="tier-row"><span>Active cases</span><b>{priceQ.data.cases}</b></div>
+              <div className="tier-row"><span>With real Steam price</span><b>{priceQ.data.steamPriced}</b></div>
+              <div className="tier-row"><span>With fallback price (Pricempire)</span><b>{priceQ.data.fallbackPriced}</b></div>
+              <div className="tier-row"><span>Cases without price (NULL)</span><b>{priceQ.data.casesNoPrice}</b></div>
+              <div className="tier-row"><span>Queue pending</span><b>{priceQ.data.pending}</b></div>
+              <div className="tier-row"><span>Last price update</span><b>{priceQ.data.lastSyncedAt ? new Date(priceQ.data.lastSyncedAt).toLocaleString() : '-'}</b></div>
+            </div>
+          )}
           <div className="panel pw-change">
             <h3>Change admin password</h3>
             <div className="pw-row">

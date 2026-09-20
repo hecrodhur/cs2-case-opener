@@ -2,7 +2,7 @@ import { query, one, run, js } from '../db.js';
 import { getSettings } from './global.js';
 import { config, getAdminPassword } from '../config.js';
 
-const PBKDF2_ITERATIONS = 150_000;
+const PBKDF2_ITERATIONS = 100_000;
 
 function b64(bytes: Uint8Array): string {
   let s = '';

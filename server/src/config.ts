@@ -15,7 +15,12 @@ export const config = {
   stattrakChance: 0.1,
   souvenirChance: 0.05,
   steamMinIntervalMs: 1_500,
+  // Steam numeric currency codes: 1=USD 2=GBP 3=EUR (prices are stored as EUR)
+  steamCurrency: 3,
+  steamPriceOverviewUrl: 'https://steamcommunity.com/market/priceoverview/',
+  steamRetryBackoffsMs: [2000, 6000, 20000],
   steamMarketUrl: 'https://steamcommunity.com/market/search/render/',
+  pricempireUrl: 'https://api.pricempire.com/v4/paid/items/prices',
   csgoApiBase: env.CSGO_API_BASE ?? 'https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en',
   csgoApiBaseMirror: env.CSGO_API_BASE_MIRROR ?? 'https://cdn.jsdelivr.net/gh/ByMykel/CSGO-API@main/public/api/en',
 } as const;
@@ -26,4 +31,14 @@ export function setAdminPassword(p: string) {
 }
 export function getAdminPassword(): string {
   return adminPassword;
+}
+
+// Optional second price source (fallback when Steam has no listing).
+// Set as a Cloudflare secret: `wrangler secret put PRICEMPIRE_API_KEY`
+let pricempireKey = env.PRICEMPIRE_API_KEY ?? '';
+export function setPricempireKey(k: string) {
+  pricempireKey = k;
+}
+export function getPricempireKey(): string {
+  return pricempireKey;
 }

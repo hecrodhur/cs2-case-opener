@@ -8,6 +8,8 @@ export interface HandlerCtx {
   env: Env;
   hub: RealtimeHub;
   prices: PriceSyncService;
+  /** Run background work that outlives the response (Workers waitUntil). */
+  waitUntil: (p: Promise<unknown>) => void;
 }
 
 export interface Req {

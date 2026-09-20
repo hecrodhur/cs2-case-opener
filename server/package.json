@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json --noEmit",
     "start": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node --import tsx --test src/test/rng.test.ts src/test/api.test.ts src/test/overhaul.test.ts",
+    "test": "node --import tsx --test src/test/rng.test.ts src/test/api.test.ts src/test/overhaul.test.ts src/test/pricing.test.ts",
     "test:rng": "node --import tsx --test src/test/rng.test.ts",
     "db:init": "node --import tsx src/cli/migrate.ts",
     "sync": "node --import tsx src/cli/sync.ts"

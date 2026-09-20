@@ -21,6 +21,7 @@ export interface Env {
   RT: RealtimeNamespace;
   ASSETS?: { fetch(request: Request): Promise<Response> } | null;
   ADMIN_PASSWORD?: string;
+  PRICEMPIRE_API_KEY?: string;
   SEED_CATALOG?: string;
   RATE_LIMIT_SCALE?: string;
   WELCOME_BALANCE_CENTS?: string;

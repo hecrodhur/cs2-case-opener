@@ -99,14 +99,23 @@ test('wear distribution: all 5 wears appear over 400 opens of a [0,1] item', asy
   assert.ok(wearCount['Battle-Scarred'] > wearCount['Field-Tested']);
 });
 
-test('case cost: ensureCaseCosts fills unlisted cases with fallback', async () => {
-  const { ensureCaseCosts, fallbackCaseCostCents } = await import('../data/sync.js');
-  const n = await handle.withDb(() => ensureCaseCosts());
-  assert.ok(n >= 1, 'at least one case got a cost');
-  const row: any = handle.db.prepare('SELECT cost_cents FROM cases WHERE id = ?').get((globalThis as any).__case2);
-  assert.ok(Number(row.cost_cents) > 0, 'unlisted case now has a cost');
-  const fb = fallbackCaseCostCents('Unlisted Case', '2015-01-01');
-  assert.ok(fb >= 134 && fb <= 164, `fallback for 2015 case in [134,164], got ${fb}`);
+test('case cost: ensureCaseCosts uses ONLY real Steam prices, never a fallback', async () => {
+  const { ensureCaseCosts } = await import('../data/sync.js');
+  const c2 = (globalThis as any).__case2;
+  // unlisted case (no prices row): cost must stay NULL, never a 1.49€-style estimate
+  await handle.withDb(() => ensureCaseCosts());
+  const row: any = handle.db.prepare('SELECT cost_cents FROM cases WHERE id = ?').get(c2);
+  assert.equal(row.cost_cents, null, 'unlisted case keeps cost_cents NULL (no artificial fallback)');
+
+  // case WITH a real steam price row: cost = price * ratio
+  handle.db.prepare("INSERT INTO items (kind, market_hash_name, name, rarity_tier) VALUES ('case', 'Priced Case', 'Priced Case', 'mil_spec')").run();
+  const { lastInsertRowid } = handle.db.prepare("INSERT INTO cases (item_id, name, market_hash_name, active) VALUES (last_insert_rowid(), 'Priced Case', 'Priced Case', 1)").run();
+  const caseId = Number(lastInsertRowid);
+  const itemId = Number((handle.db.prepare('SELECT item_id FROM cases WHERE id = ?').get(caseId) as any).item_id);
+  handle.db.prepare("INSERT INTO prices (item_id, wear, stattrak, lowest_price_cents, currency, source, updated_at) VALUES (?, 'any', 0, 13662, 'EUR', 'steam_market', strftime('%Y-%m-%dT%H:%M:%fZ','now'))").run(itemId);
+  await handle.withDb(() => ensureCaseCosts());
+  const row2: any = handle.db.prepare('SELECT cost_cents FROM cases WHERE id = ?').get(caseId);
+  assert.ok(Number(row2.cost_cents) > 0, 'listed case gets a cost from its Steam price');
 });
 
 test('admin console: login gate, /help, /stats, /balance, /give money, audit', async () => {

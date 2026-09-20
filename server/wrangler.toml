@@ -2,16 +2,15 @@ name = "cs2-case-opener"
 main = "src/worker.ts"
 compatibility_date = "2025-06-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+account_id = "f477af41237d6715566cd34400604c7f"
 
-# D1 database (create once: wrangler d1 create cs2_case_opener_d1, then
-# run `npm run db:init` to apply the SQL migrations locally)
 [[d1_databases]]
 binding = "DB"
 database_name = "cs2-case-opener"
 database_id = "3bafcec3-1d62-456d-9b14-5c5698ae0da0"
 migrations_dir = "src/db/migrations"
 
-# Durable Object: realtime fan-out (WebSocket)
 [durable_objects]
 bindings = [
   { name = "RT", class_name = "Realtime" }
@@ -21,13 +20,11 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["Realtime"]
 
-# Static assets: the built React app (web/dist)
 [assets]
 directory = "../web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
-# Background jobs (replaces setInterval)
 [triggers]
 crons = ["*/5 * * * *"]

@@ -4,6 +4,7 @@ import { loadCaseDefinitions } from './caseDefinitions.js';
 import { query, one, run, insert } from '../db.js';
 import type { RarityTier } from 'shared';
 import { RARITY_TIERS, DEFAULT_PROBABILITIES } from 'shared';
+import { config } from '../config.js';
 // definitions are bundled via JSON imports (see data/caseDefinitions.ts)
 export const CASE_DEFINITIONS_DIR = 'src/case-definitions';
 
@@ -167,38 +168,25 @@ export async function syncCatalog(data: CsgoApiData, defDir: string = CASE_DEFIN
   return { skins: data.skins.length, cases, pools, poolItems, warnings };
 }
 
-function djb2(s: string): number {
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
-  return h;
-}
-
 /**
- * Fallback cost for cases with no Steam price (old cases are often unlisted).
- * Deterministic per case, scales with case age: newer cases cost more.
+ * Give a cost to every active case missing one, using ONLY a real Steam
+ * Community Market price (price * priceCostRatio).
+ * Cases without a Steam listing keep cost_cents NULL: no fallback, no
+ * estimation from case age. The price sync queue keeps retrying them; a case
+ * with NULL cost is not openable until Steam reports a real listing.
  */
-export function fallbackCaseCostCents(name: string, firstSaleDate: string | null): number {
-  const year = firstSaleDate ? new Date(firstSaleDate).getFullYear() : 2015;
-  const base = year < 2016 ? 149 : year < 2019 ? 299 : year < 2022 ? 599 : year < 2024 ? 999 : 1499;
-  const jitter = (djb2(name) % 21) - 10; // -10%..+10%
-  return Math.max(50, Math.round((base * (100 + jitter)) / 100));
-}
-
-/** Give a cost to every active case missing one. Steam price wins over fallback. */
 export async function ensureCaseCosts(): Promise<number> {
   const rows = await query<any>(
-    `SELECT c.id, c.name, c.first_sale_date, i.id AS item_id,
-            p.lowest_price_cents AS steam_cents
+    `SELECT c.id, p.lowest_price_cents AS steam_cents
      FROM cases c
      JOIN items i ON i.id = c.item_id
-     LEFT JOIN prices p ON p.item_id = i.id AND p.wear = 'any' AND p.lowest_price_cents IS NOT NULL
+     LEFT JOIN prices p ON p.item_id = i.id AND p.wear = 'any' AND p.stattrak = 0
      WHERE c.cost_cents IS NULL AND c.active = TRUE`,
   );
   let n = 0;
   for (const r of rows) {
-    const cost = r.steam_cents != null
-      ? Math.max(1, Math.round(Number(r.steam_cents) * 1))
-      : fallbackCaseCostCents(r.name, r.first_sale_date);
+    if (r.steam_cents == null) continue; // no real price yet: leave NULL
+    const cost = Math.max(1, Math.round(Number(r.steam_cents) * config.priceCostRatio));
     await run('UPDATE cases SET cost_cents = $2, updated_at = now() WHERE id = $1', [r.id, cost]);
     n++;
   }

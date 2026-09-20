@@ -3,6 +3,7 @@ import { requireAdmin, verifyPassword, createSession } from '../services/auth.js
 import { getSettings, setSetting, validateSettings } from '../services/global.js';
 import { loadCsgoApiData } from '../data/api.js';
 import { syncCatalog } from '../data/sync.js';
+import { priceStats, refreshPricesForCases, repairCaseCosts } from '../services/priceJobs.js';
 import { config } from '../config.js';
 import { RARITY_TIERS, type RarityTier } from 'shared';
 import { runAdminCommand } from '../services/commands.js';
@@ -192,22 +193,30 @@ route.post('/api/admin/sync/catalog', async (req) => {
 
 route.post('/api/admin/sync/prices', async (req, ctx) => {
   const admin = requireAdmin(await authUser(req));
-  const { caseIds } = (req.body ?? {}) as any;
-  const prices = ctx.prices;
-  let list: any[];
-  if (Array.isArray(caseIds) && caseIds.length) {
-    list = await query<any>('SELECT * FROM cases WHERE id = ANY($1)', [caseIds]);
-  } else {
-    list = await query<any>('SELECT * FROM cases WHERE active = TRUE ORDER BY name LIMIT 25');
-  }
-  let enqueued = 0;
-  for (const c of list) {
-    const item = await one<any>('SELECT * FROM items WHERE id = $1', [c.item_id]);
-    if (item) enqueued += prices.request({ itemId: item.id, mhn: c.market_hash_name ?? c.name, wear: 'any', stattrak: false }) ? 1 : 0;
-  }
-  await audit(admin.id, 'price_sync_triggered', 'prices', { caseCount: list.length, enqueued });
-  void prices.run();
-  return json(200, { ok: true, queued: enqueued, pending: prices.pending });
+  const { limit } = (req.body ?? {}) as { limit?: number };
+  const max = Number(limit) > 0 ? Math.min(Number(limit), 500) : 60;
+  const enqueued = await refreshPricesForCases(ctx.prices, max);
+  const stats = await priceStats();
+  await audit(admin.id, 'price_sync_triggered', 'prices', { enqueued, ...stats });
+  // the worker runs the queue via waitUntil once this response is sent
+  return json(200, { ok: true, enqueued, pending: stats.pending, stats });
+});
+
+route.get('/api/admin/prices/stats', async (req) => {
+  requireAdmin(await authUser(req));
+  return json(200, await priceStats());
+});
+
+// One-shot repair: invalidates every active case cost so the next price sync
+// re-derives it from real Steam data (NULL when Steam has no listing).
+// Balances, inventories, openings and battles are untouched.
+route.post('/api/admin/prices/repair', async (req, ctx) => {
+  const admin = requireAdmin(await authUser(req));
+  const invalidated = await repairCaseCosts();
+  await audit(admin.id, 'case_cost_repair', 'prices', { invalidated });
+  const enqueued = await refreshPricesForCases(ctx.prices, 60);
+  const stats = await priceStats();
+  return json(200, { ok: true, invalidated, enqueued, pending: stats.pending, stats });
 });
 
 route.get('/api/admin/prices', async (req, ctx) => {
@@ -223,7 +232,8 @@ route.get('/api/admin/prices', async (req, ctx) => {
         `SELECT p.item_id, i.name, p.wear, p.stattrak, p.lowest_price_cents, p.volume, p.source, p.updated_at
          FROM prices p JOIN items i ON i.id = p.item_id ORDER BY p.updated_at DESC LIMIT 100`,
       );
-  return json(200, { items: rows, pending: ctx.prices.pending });
+  const stats = await priceStats();
+  return json(200, { items: rows, pending: stats.pending, stats });
 });
 
 route.get('/api/admin/audit', async (req) => {
