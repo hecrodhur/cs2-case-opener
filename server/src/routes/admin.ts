@@ -3,8 +3,10 @@ import { requireAdmin, verifyPassword, createSession } from '../services/auth.js
 import { getSettings, setSetting, validateSettings } from '../services/global.js';
 import { loadCsgoApiData } from '../data/api.js';
 import { syncCatalog } from '../data/sync.js';
-import { priceStats, refreshPricesForCases, repairCaseCosts } from '../services/priceJobs.js';
+import { priceStats, refreshPricesForCases, repairCaseCosts, PRICE_BATCH_SIZE } from '../services/priceJobs.js';
 import { config } from '../config.js';
+import { STEAM_UA, classifySteamError, parseMarketHtml } from '../services/pricing.js';
+import { steamQueryFor } from '../util/marketHash.js';
 import { RARITY_TIERS, type RarityTier } from 'shared';
 import { runAdminCommand } from '../services/commands.js';
 import { route, json, authUser, httpError } from './index.js';
@@ -194,7 +196,8 @@ route.post('/api/admin/sync/catalog', async (req) => {
 route.post('/api/admin/sync/prices', async (req, ctx) => {
   const admin = requireAdmin(await authUser(req));
   const { limit } = (req.body ?? {}) as { limit?: number };
-  const max = Number(limit) > 0 ? Math.min(Number(limit), 500) : 60;
+  // capped to the safe per-invocation batch (Workers Free subrequest budget)
+  const max = Math.min(Number(limit) > 0 ? Number(limit) : PRICE_BATCH_SIZE, PRICE_BATCH_SIZE);
   const enqueued = await refreshPricesForCases(ctx.prices, max);
   const stats = await priceStats();
   await audit(admin.id, 'price_sync_triggered', 'prices', { enqueued, ...stats });
@@ -214,7 +217,7 @@ route.post('/api/admin/prices/repair', async (req, ctx) => {
   const admin = requireAdmin(await authUser(req));
   const invalidated = await repairCaseCosts();
   await audit(admin.id, 'case_cost_repair', 'prices', { invalidated });
-  const enqueued = await refreshPricesForCases(ctx.prices, 60);
+  const enqueued = await refreshPricesForCases(ctx.prices);
   const stats = await priceStats();
   return json(200, { ok: true, invalidated, enqueued, pending: stats.pending, stats });
 });
@@ -234,6 +237,53 @@ route.get('/api/admin/prices', async (req, ctx) => {
       );
   const stats = await priceStats();
   return json(200, { items: rows, pending: stats.pending, stats });
+});
+
+// Live diagnostic: one direct fetch to Steam (no retry, no queue) for a given
+// market_hash_name, so admin can verify the real response from the Worker
+// (403/429/5xx, success flag, parsed price) without touching the queue.
+route.get('/api/admin/diag/steam', async (req) => {
+  requireAdmin(await authUser(req));
+  const mhn = String(req.query.get('mhn') ?? 'CS:GO Weapon Case');
+  const endpoint = req.query.get('endpoint') === 'search' ? 'search' : 'overview';
+  const t0 = Date.now();
+  const url =
+    endpoint === 'search'
+      ? `${config.steamMarketUrl}?query=${encodeURIComponent(steamQueryFor(mhn))}&appid=730&currency=${config.steamCurrency}&start=0&count=50&sort_column=price&sort_dir=asc&filter_version=0&filter_state=1&filter_type=bit_immutable&filter_tradable=1&filter_marketable_name=1`
+      : `${config.steamPriceOverviewUrl}?appid=730&currency=${config.steamCurrency}&market_hash_name=${encodeURIComponent(mhn)}`;
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': STEAM_UA, Accept: 'application/json' } });
+    const text = await res.text();
+    let parsed: any = null;
+    let jsonError: string | null = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e: any) {
+      jsonError = e.message;
+    }
+    await audit(null, 'steam_diag', mhn, { endpoint, status: res.status }).catch(() => {});
+    if (endpoint === 'search' && parsed?.results_html) {
+      const rows = parseMarketHtml(parsed.results_html);
+      const exact = rows.find((r) => r.mhn === mhn);
+      return json(200, { ok: true, mhn, endpoint, status: res.status, ms: Date.now() - t0, exactMatch: exact ?? null, rowCount: rows.length, sample: rows.slice(0, 5) });
+    }
+    return json(200, {
+      ok: true,
+      mhn,
+      endpoint,
+      status: res.status,
+      ms: Date.now() - t0,
+      jsonError,
+      success: parsed?.success ?? null,
+      lowestPriceRaw: parsed?.lowest_price ?? null,
+      volumeRaw: parsed?.volume ?? null,
+      currency: parsed?.currency ?? null,
+      raw: text.slice(0, 500),
+    });
+  } catch (e: any) {
+    await audit(null, 'steam_diag_error', mhn, { endpoint, message: e.message }).catch(() => {});
+    return json(200, { ok: false, mhn, endpoint, ms: Date.now() - t0, error: e.message, kind: classifySteamError(e) });
+  }
 });
 
 route.get('/api/admin/audit', async (req) => {

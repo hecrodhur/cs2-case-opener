@@ -68,6 +68,20 @@ export default function AdminPage() {
   const [curPw, setCurPw] = useState('');
   const [newPw, setNewPw] = useState('');
   const [pwMsg, setPwMsg] = useState<string | null>(null);
+  const [diagMhn, setDiagMhn] = useState('CS:GO Weapon Case');
+  const [diagRes, setDiagRes] = useState<any>(null);
+  const [diagBusy, setDiagBusy] = useState(false);
+
+  const runDiag = async (endpoint: 'overview' | 'search') => {
+    setDiagBusy(true);
+    setDiagRes(null);
+    try {
+      setDiagRes(await api.get<any>(`/api/admin/diag/steam?mhn=${encodeURIComponent(diagMhn)}&endpoint=${endpoint}`));
+    } catch (e: any) {
+      setDiagRes({ ok: false, error: e.message });
+    }
+    setDiagBusy(false);
+  };
 
   useEffect(() => {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
@@ -216,8 +230,29 @@ export default function AdminPage() {
               <div className="tier-row"><span>Cases without price (NULL)</span><b>{priceQ.data.casesNoPrice}</b></div>
               <div className="tier-row"><span>Queue pending</span><b>{priceQ.data.pending}</b></div>
               <div className="tier-row"><span>Last price update</span><b>{priceQ.data.lastSyncedAt ? new Date(priceQ.data.lastSyncedAt).toLocaleString() : '-'}</b></div>
+              <div className="tier-row"><span>Steam OK (total)</span><b>{priceQ.data.steamOk}</b></div>
+              <div className="tier-row"><span>No listing on Steam</span><b>{priceQ.data.notListed}</b></div>
+              <div className="tier-row"><span>Errors (total)</span><b>{priceQ.data.errors}</b></div>
+              <div className="tier-row"><span>&nbsp;&nbsp;HTTP 403</span><b>{priceQ.data.http403}</b></div>
+              <div className="tier-row"><span>&nbsp;&nbsp;HTTP 429</span><b>{priceQ.data.http429}</b></div>
+              <div className="tier-row"><span>&nbsp;&nbsp;HTTP 5xx</span><b>{priceQ.data.http5xx}</b></div>
+              <div className="tier-row"><span>&nbsp;&nbsp;Bad JSON</span><b>{priceQ.data.jsonErrors}</b></div>
+              <div className="tier-row"><span>&nbsp;&nbsp;Other</span><b>{priceQ.data.otherErrors}</b></div>
+              <div className="tier-row"><span>Last success</span><b>{priceQ.data.lastOkAt ? new Date(priceQ.data.lastOkAt).toLocaleString() : '-'}</b></div>
+              <div className="tier-row"><span>Last error</span><b>{priceQ.data.lastError ? `${priceQ.data.lastErrorAt ? new Date(priceQ.data.lastErrorAt).toLocaleString() : '-'} - ${priceQ.data.lastError}` : '-'}</b></div>
             </div>
           )}
+          <div className="panel pw-change">
+            <h3>Steam diagnostic (live fetch from this Worker)</h3>
+            <div className="pw-row">
+              <input className="input" placeholder="market_hash_name" value={diagMhn} onChange={(e) => setDiagMhn(e.target.value)} />
+              <button className="btn btn-ghost" disabled={diagBusy} onClick={() => void runDiag('overview')}>Check priceoverview</button>
+              <button className="btn btn-ghost" disabled={diagBusy} onClick={() => void runDiag('search')}>Check search/render</button>
+            </div>
+            {diagRes && (
+              <pre className="terminal" style={{ whiteSpace: 'pre-wrap', fontSize: 12, margin: '8px 0 0' }}>{JSON.stringify(diagRes, null, 2)}</pre>
+            )}
+          </div>
           <div className="panel pw-change">
             <h3>Change admin password</h3>
             <div className="pw-row">

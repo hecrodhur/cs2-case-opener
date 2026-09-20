@@ -77,7 +77,7 @@ async function createInstanceFor(user: any, item: any): Promise<any> {
     const seed = makeSeed();
     const priceRows = (
       await c.query(
-        'SELECT wear, stattrak, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL',
+        'SELECT wear, stattrak, souvenir, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL',
         [item.id],
       )
     ).rows;

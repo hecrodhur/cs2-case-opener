@@ -246,7 +246,7 @@ test('8+9. refresh queue is progressive and resumes (cron never restarts from th
       await r(
         `INSERT INTO prices (item_id, wear, stattrak, lowest_price_cents, currency, source, updated_at)
          VALUES ($1, 'any', 0, 100, 'EUR', 'steam_market', now())
-         ON CONFLICT (item_id, wear, stattrak) DO UPDATE SET lowest_price_cents = 100, updated_at = now()`,
+         ON CONFLICT (item_id, wear, stattrak, souvenir) DO UPDATE SET lowest_price_cents = 100, updated_at = now()`,
         [j.itemId],
       );
     }
@@ -260,7 +260,7 @@ test('8+9. refresh queue is progressive and resumes (cron never restarts from th
       await (await import('../db.js')).run(
         `INSERT INTO prices (item_id, wear, stattrak, lowest_price_cents, currency, source, updated_at)
          VALUES ($1, 'any', 0, 100, 'EUR', 'steam_market', now())
-         ON CONFLICT (item_id, wear, stattrak) DO UPDATE SET lowest_price_cents = 100, updated_at = now()`,
+         ON CONFLICT (item_id, wear, stattrak, souvenir) DO UPDATE SET lowest_price_cents = 100, updated_at = now()`,
         [j.itemId],
       );
     }

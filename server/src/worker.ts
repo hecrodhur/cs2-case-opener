@@ -65,7 +65,8 @@ export default {
           const res = await dispatch(request, ctx);
           // Keep the price queue running after the response is sent so a sync
           // trigger never holds the request open for minutes of Steam fetches.
-          if (ctx.prices.pending > 0) ctx.waitUntil(ctx.prices.run());
+          // attempts=1: no retries, fits the 30s waitUntil wall limit.
+          if (ctx.prices.pending > 0) ctx.waitUntil(ctx.prices.run(undefined, { attempts: 1 }));
           return res;
         } catch (e: any) {
           const status = Number(e.statusCode) >= 400 ? Number(e.statusCode) : 500;
@@ -99,8 +100,10 @@ export default {
     if (env.PRICEMPIRE_API_KEY) setPricempireKey(env.PRICEMPIRE_API_KEY);
     const ctx = makeCtx(env);
     await runWithDb(env.DB, async () => {
-      await refreshPricesForCases(ctx.prices, 60);
-      await ctx.prices.run();
+      // small batch (Workers Free 50-subrequest limit) with full retries;
+      // the persistent queue drains the rest on the next cron tick
+      await refreshPricesForCases(ctx.prices);
+      await ctx.prices.run(undefined, { attempts: 3 });
     });
   },
 };

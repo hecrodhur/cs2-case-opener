@@ -44,7 +44,7 @@ export async function quickSellMany(
     for (const row of rows) {
       const priceRows = (
         await c.query(
-          'SELECT wear, stattrak, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL',
+          'SELECT wear, stattrak, souvenir, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL',
           [row.item_id],
         )
       ).rows;
@@ -119,7 +119,7 @@ export async function quickSellItem(
 
     const priceRows = (
       await c.query(
-        'SELECT wear, stattrak, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL',
+        'SELECT wear, stattrak, souvenir, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL',
         [row.item_id],
       )
     ).rows;

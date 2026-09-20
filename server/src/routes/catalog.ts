@@ -5,8 +5,8 @@ import { RARITY_TIERS, type RarityTier } from 'shared';
 import { route, json, authUser, httpError } from './index.js';
 
 const PRICE_SUB = `COALESCE(
-  (SELECT p.lowest_price_cents FROM prices p WHERE p.item_id = i.id AND p.stattrak = FALSE AND p.wear = 'Field-Tested'),
-  (SELECT MIN(p.lowest_price_cents) FROM prices p WHERE p.item_id = i.id AND p.stattrak = FALSE)
+  (SELECT p.lowest_price_cents FROM prices p WHERE p.item_id = i.id AND p.stattrak = FALSE AND p.souvenir = FALSE AND p.wear = 'Field-Tested'),
+  (SELECT MIN(p.lowest_price_cents) FROM prices p WHERE p.item_id = i.id AND p.stattrak = FALSE AND p.souvenir = FALSE)
 )`;
 
 route.get('/api/cases', async (req) => {
@@ -38,9 +38,9 @@ route.get('/api/cases', async (req) => {
     `SELECT c.id, c.name, c.image, c.cost_cents, c.probabilities, c.first_sale_date,
             (SELECT COUNT(*) FROM case_pools p JOIN case_pool_items pi ON pi.case_pool_id = p.id WHERE p.case_id = c.id) AS item_count,
             (SELECT COUNT(*) FROM openings o WHERE o.case_id = c.id) AS openings,
-            (SELECT p.lowest_price_cents FROM prices p JOIN items i ON i.id = p.item_id WHERE i.id = c.item_id LIMIT 1) AS steam_price,
-            (SELECT p.volume FROM prices p JOIN items i ON i.id = p.item_id WHERE i.id = c.item_id LIMIT 1) AS steam_volume,
-            (SELECT p.updated_at FROM prices p JOIN items i ON i.id = p.item_id WHERE i.id = c.item_id LIMIT 1) AS price_updated_at
+            (SELECT p.lowest_price_cents FROM prices p JOIN items i ON i.id = p.item_id WHERE i.id = c.item_id AND p.wear = 'any' AND p.stattrak = 0 AND p.souvenir = 0 LIMIT 1) AS steam_price,
+            (SELECT p.volume FROM prices p JOIN items i ON i.id = p.item_id WHERE i.id = c.item_id AND p.wear = 'any' AND p.stattrak = 0 AND p.souvenir = 0 LIMIT 1) AS steam_volume,
+            (SELECT p.updated_at FROM prices p JOIN items i ON i.id = p.item_id WHERE i.id = c.item_id AND p.wear = 'any' AND p.stattrak = 0 AND p.souvenir = 0 LIMIT 1) AS price_updated_at
      FROM cases c
      WHERE ${where}
      ORDER BY ${order}
@@ -71,7 +71,7 @@ route.get('/api/cases/:id', async (req) => {
     );
     contents.push({ tier, items });
   }
-  const price = await one<any>('SELECT * FROM prices WHERE item_id = $1', [c.item_id]);
+  const price = await one<any>("SELECT * FROM prices WHERE item_id = $1 AND wear = 'any' AND stattrak = 0 AND souvenir = 0 LIMIT 1", [c.item_id]);
   return json(200, {
     ...c,
     probabilities: js(c.probabilities) ?? {},

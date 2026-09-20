@@ -2,14 +2,16 @@ import { query } from '../db.js';
 import type { RarityTier } from 'shared';
 
 /**
- * Virtual value model. Every instance gets a deterministic value in cents:
- *  - Steam lowest ask for the item when available (best matching row)
- *  - otherwise a tier-based base value
- * Both paths then apply wear / StatTrak / souvenir / pattern adjustments so
- * value consistently depends on float, wear, ST, souvenir and pattern.
+ * Virtual value model, in priority order:
+ *  1. exact real market price for this variant (item + wear + stattrak + souvenir)
+ *  2. real price of the base variant (same wear, non-ST/souvenir) + a clearly
+ *     marked premium only when the variant's own real price is missing
+ *  3. cheapest real price of the item (any wear) with a wear-ratio correction
+ *  4. tier-based base value (no real price at all yet)
+ * WEAR_VALUE_RATIO is only used in steps 3/4 as a fallback; it never
+ * overwrites a real price fetched for the exact variant.
  */
 
-// typical Steam market value ratio per wear, relative to Field-Tested
 export const WEAR_VALUE_RATIO: Record<string, number> = {
   'Factory New': 1.9,
   'Minimal Wear': 1.35,
@@ -21,11 +23,9 @@ export const WEAR_VALUE_RATIO: Record<string, number> = {
 export const SOUVENIR_RATIO = 1.5;
 
 /**
- * StatTrak premium/discount vs the non-ST value of the same item.
- * Knives carry a discount (ST knives are worth less than their normal version);
- * skins get a premium that shrinks with the base price.
- * Steam market rows for StatTrak items are unreliable (often 1c placeholders),
- * so ST value is always derived from the non-ST price with this rule.
+ * StatTrak premium/discount vs the non-ST value of the same item, used only
+ * when no real StatTrak market row exists for the variant (Steam ST rows are
+ * often 1c placeholders). Knives carry a discount; skins a shrinking premium.
  */
 export function stattrakMultiplier(baseCents: number, category: string | null): number {
   if ((category ?? '').toLowerCase() === 'knives') return 0.925; // knives: ST is worth 7.5% less
@@ -55,26 +55,66 @@ export interface ValueInput {
   category?: string | null;
 }
 
-/** Best available Steam price row for an item (exact match preferred). */
+/** All non-null Steam price rows for an item (every variant). */
 export async function resolveSteamPrice(itemId: number) {
-  const rows = await query<any>('SELECT wear, stattrak, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL', [itemId]);
-  if (!rows.length) return null;
-  const priced = rows.filter((r) => r.lowest_price_cents > 0);
-  if (!priced.length) return null;
-  return priced;
+  const rows = await query<any>(
+    'SELECT wear, stattrak, souvenir, lowest_price_cents FROM prices WHERE item_id = $1 AND lowest_price_cents IS NOT NULL',
+    [itemId],
+  );
+  return rows;
 }
 
-export function pickBestPrice(rows: any[], input: ValueInput): any | null {
-  if (!rows.length) return null;
-  // 1) exact wear + stattrak, 2) same stattrak, 3) same wear, 4) cheapest row
-  const wear = input.wear;
-  const exact = rows.find((r) => r.stattrak === input.stattrak && r.wear === wear);
-  if (exact) return exact;
-  const st = rows.find((r) => r.stattrak === input.stattrak);
-  if (st) return st;
-  const wearRow = rows.find((r) => r.wear === wear);
-  if (wearRow) return wearRow;
-  return rows.reduce((a, b) => (a.lowest_price_cents <= b.lowest_price_cents ? a : b));
+/**
+ * A market row is usable when it has a real price. StatTrak rows at 1-2 cents
+ * are Steam placeholders, not real asks, so they are treated as missing when
+ * a real non-ST price exists.
+ */
+function realCents(row: any, isStRow: boolean, baseExists: boolean): number | null {
+  const c = Number(row.lowest_price_cents);
+  if (!Number.isFinite(c) || c <= 0) return null;
+  if (isStRow && c < 100 && baseExists) return null;
+  return c;
+}
+
+export function estimatedValueCents(input: ValueInput, priceRows: any[]): number {
+  const adj = 1 + variantAdjustment(input.pattern, input.phase, input.seed);
+  const target = input.wear ?? 'Field-Tested';
+  const rTarget = WEAR_VALUE_RATIO[target] ?? 1;
+  const baseRow = priceRows.find((r) => !r.stattrak && !r.souvenir && (r.wear === target || r.wear === 'any'));
+  const baseCents = baseRow ? realCents(baseRow, false, false) : null;
+
+  // 1) exact real price for this variant
+  const exact = priceRows.find(
+    (r) => Boolean(r.stattrak) === input.stattrak && Boolean(r.souvenir) === input.souvenir && (r.wear === target || r.wear === 'any'),
+  );
+  const exactCents = exact ? realCents(exact, Boolean(exact.stattrak), Boolean(baseCents)) : null;
+  if (exactCents != null) return Math.max(1, Math.round(exactCents * adj));
+
+  // 2) real base price for this wear: apply the ST/souvenir premium only
+  // because no real price exists for this exact variant yet
+  if (baseCents != null) {
+    let v = baseCents;
+    if (input.stattrak) v *= stattrakMultiplier(v, input.category ?? null);
+    if (input.souvenir) v *= SOUVENIR_RATIO;
+    return Math.max(1, Math.round(v * adj));
+  }
+
+  // 3) real price of some other wear: correct with the wear ratio (fallback)
+  const others = priceRows.filter((r) => r.lowest_price_cents != null).map((r) => ({ ...r, c: Number(r.lowest_price_cents) }));
+  if (others.length) {
+    const row = others.reduce((a, b) => (a.c <= b.c ? a : b));
+    const rRef = WEAR_VALUE_RATIO[row.wear] ?? 1;
+    let v = (row.c * rTarget) / rRef;
+    if (input.stattrak) v *= stattrakMultiplier(v, input.category ?? null);
+    if (input.souvenir) v *= SOUVENIR_RATIO;
+    return Math.max(1, Math.round(v * adj));
+  }
+
+  // 4) no real price yet: tier-based fallback
+  let v = (TIER_BASE_VALUE_CENTS[input.tier] ?? TIER_BASE_VALUE_CENTS.mil_spec) * rTarget;
+  if (input.stattrak) v *= stattrakMultiplier(v, input.category ?? null);
+  if (input.souvenir) v *= SOUVENIR_RATIO;
+  return Math.max(1, Math.round(v * adj));
 }
 
 /** deterministic small variation for pattern/phase/seed, in [-0.04, 0.04] */
@@ -85,30 +125,6 @@ function variantAdjustment(pattern: number | null, phase: number | null, seed: s
   if (!h) return 0;
   const u = ((h % 1000) / 1000 - 0.5) * 0.08;
   return u;
-}
-
-export function estimatedValueCents(input: ValueInput, priceRows: any[]): number {
-  // StatTrak market rows are 1c placeholders: value ST items from the non-ST price
-  const rows = input.stattrak ? priceRows.filter((r) => !r.stattrak) : priceRows;
-  const row = pickBestPrice(rows, input);
-  let value: number;
-  let refWear: string | null;
-  if (row) {
-    value = Number(row.lowest_price_cents);
-    refWear = row.wear === 'any' ? null : row.wear;
-  } else {
-    value = TIER_BASE_VALUE_CENTS[input.tier] ?? TIER_BASE_VALUE_CENTS.mil_spec;
-    refWear = null;
-  }
-  // wear correction: reference prices are fetched at Field-Tested (or 'any')
-  const target = input.wear ?? 'Field-Tested';
-  const rTarget = WEAR_VALUE_RATIO[target] ?? 1;
-  const rRef = refWear ? (WEAR_VALUE_RATIO[refWear] ?? 1) : 1;
-  value = (value * rTarget) / rRef;
-  if (input.stattrak) value *= stattrakMultiplier(value, input.category ?? null);
-  if (input.souvenir) value *= SOUVENIR_RATIO;
-  value *= 1 + variantAdjustment(input.pattern, input.phase, input.seed);
-  return Math.max(1, Math.round(value));
 }
 
 /** Full value for an instance: resolves its Steam rows then applies the model. */
