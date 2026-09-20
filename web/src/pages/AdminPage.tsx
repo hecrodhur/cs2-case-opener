@@ -130,6 +130,11 @@ export default function AdminPage() {
     enabled: me?.role === 'admin' && tab === 'overview',
     refetchInterval: 10_000,
   });
+  const snapQ = useQuery({
+    queryKey: ['admin', 'prices', 'snapshot'],
+    queryFn: () => api.get<any>('/api/admin/prices/snapshot'),
+    enabled: me?.role === 'admin' && tab === 'overview',
+  });
   const settingsQ = useQuery({
     queryKey: ['admin', 'settings'],
     queryFn: async () => {
@@ -231,6 +236,12 @@ export default function AdminPage() {
               <div className="tier-row"><span>Queue pending</span><b>{priceQ.data.pending}</b></div>
               <div className="tier-row"><span>Last price update</span><b>{priceQ.data.lastSyncedAt ? new Date(priceQ.data.lastSyncedAt).toLocaleString() : '-'}</b></div>
               <div className="tier-row"><span>Steam OK (total)</span><b>{priceQ.data.steamOk}</b></div>
+              {snapQ.data && (
+                <>
+                  <div className="tier-row"><span>Fixed snapshot (primary)</span><b>{snapQ.data.pricedItems}/{snapQ.data.totalItems} priced</b></div>
+                  <div className="tier-row"><span>Snapshot generated</span><b>{new Date(snapQ.data.generatedAt).toLocaleString()}</b></div>
+                </>
+              )}
               <div className="tier-row"><span>Recovered via Pricempire</span><b>{priceQ.data.fallbackOk}</b></div>
               <div className="tier-row"><span>No listing on Steam</span><b>{priceQ.data.notListed}</b></div>
               <div className="tier-row"><span>Errors (total)</span><b>{priceQ.data.errors}</b></div>

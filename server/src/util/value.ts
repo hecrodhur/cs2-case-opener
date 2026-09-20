@@ -1,8 +1,11 @@
 import { query } from '../db.js';
+import { lookupFixedPrice } from '../data/fixedPrices.js';
 import type { RarityTier } from 'shared';
 
 /**
  * Virtual value model, in priority order:
+ *  0. fixed price snapshot: exact market_hash_name with a real price is used
+ *     verbatim (no wear ratio, no StatTrak/Souvenir premium, no adjustment)
  *  1. exact real market price for this variant (item + wear + stattrak + souvenir)
  *  2. real price of the base variant (same wear, non-ST/souvenir) + a clearly
  *     marked premium only when the variant's own real price is missing
@@ -53,6 +56,8 @@ export interface ValueInput {
   phase: number | null;
   seed: string | null;
   category?: string | null;
+  /** exact variant market_hash_name; when set, the fixed snapshot is checked first */
+  exactMhn?: string | null;
 }
 
 /** All non-null Steam price rows for an item (every variant). */
@@ -77,6 +82,12 @@ function realCents(row: any, isStRow: boolean, baseExists: boolean): number | nu
 }
 
 export function estimatedValueCents(input: ValueInput, priceRows: any[]): number {
+  // 0) fixed snapshot wins: an exact real price is final, no adjustment applied
+  if (input.exactMhn) {
+    const hit = lookupFixedPrice(input.exactMhn);
+    if (hit) return hit.priceCents;
+  }
+
   const adj = 1 + variantAdjustment(input.pattern, input.phase, input.seed);
   const target = input.wear ?? 'Field-Tested';
   const rTarget = WEAR_VALUE_RATIO[target] ?? 1;

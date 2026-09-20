@@ -89,20 +89,23 @@ function row(db: any, itemId: number) {
   return db.prepare('SELECT * FROM prices WHERE item_id = ? AND wear = ?').get(itemId, 'any') as any;
 }
 
-test('1. CS:GO Weapon Case never gets a 1.49€ fallback (cost stays NULL without Steam price)', async () => {
+test('1. a case with no snapshot entry and no Steam price stays NULL (never fabricated)', async () => {
   await handle.withDb(async () => {
     const { ensureCaseCosts } = await import('../data/sync.js');
     const { insert } = await import('../db.js');
+    // name chosen to be absent from the fixed snapshot: no price anywhere -> NULL
+    const name = 'Unlisted Phantom Case';
     const itemId = await insert(
-      `INSERT INTO items (kind, market_hash_name, name, rarity_tier) VALUES ('case', 'CS:GO Weapon Case', 'CS:GO Weapon Case', 'mil_spec')`,
+      `INSERT INTO items (kind, market_hash_name, name, rarity_tier) VALUES ('case', $1, $1, 'mil_spec')`,
+      [name],
     );
     const caseId = await insert(
-      `INSERT INTO cases (item_id, name, market_hash_name, first_sale_date, active) VALUES ($1, 'CS:GO Weapon Case', 'CS:GO Weapon Case', '2015-01-01', 1)`,
-      [itemId],
+      `INSERT INTO cases (item_id, name, market_hash_name, first_sale_date, active) VALUES ($1, $2, $2, '2015-01-01', 1)`,
+      [itemId, name],
     );
     await ensureCaseCosts();
     const c = (handle.db.prepare('SELECT cost_cents FROM cases WHERE id = ?').get(caseId) as any).cost_cents;
-    assert.equal(c, null, 'no price from Steam -> cost must be NULL');
+    assert.equal(c, null, 'no snapshot entry and no Steam price -> cost must be NULL');
   });
 });
 

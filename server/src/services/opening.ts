@@ -2,6 +2,7 @@ import { one, query, run, tx, js } from '../db.js';
 import { rollRarity, rollFloat, rollBool, rollInt, makeSeed, wearFromFloat } from '../util/rng.js';
 import { getSettings } from './global.js';
 import { estimatedValueCents, resolveSteamPrice } from '../util/value.js';
+import { variantMhn } from '../util/marketHash.js';
 import { RealtimeHub } from './realtime.js';
 import { pushNotification } from './notify.js';
 import type { RarityTier, Probabilities } from 'shared';
@@ -103,7 +104,10 @@ export async function rollDrop(c: CaseWithPools): Promise<RollDrop> {
   const seed = makeSeed();
   const priceRows = await resolveSteamPrice(item.id);
   const priceCents = estimatedValueCents(
-    { tier, floatValue, wear, stattrak, souvenir, pattern: item.pattern, phase, seed, category: item.category },
+    {
+      tier, floatValue, wear, stattrak, souvenir, pattern: item.pattern, phase, seed, category: item.category,
+      exactMhn: variantMhn(item.name, { wear, stattrak, souvenir, glove: item.category === 'Gloves' }),
+    },
     priceRows ?? [],
   );
   return { tier, item, floatValue, wear, stattrak, souvenir, phase, seed, priceCents };

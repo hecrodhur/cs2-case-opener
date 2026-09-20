@@ -5,6 +5,7 @@ import { query, one, run, insert } from '../db.js';
 import type { RarityTier } from 'shared';
 import { RARITY_TIERS, DEFAULT_PROBABILITIES } from 'shared';
 import { config } from '../config.js';
+import { lookupFixedPrice } from './fixedPrices.js';
 // definitions are bundled via JSON imports (see data/caseDefinitions.ts)
 export const CASE_DEFINITIONS_DIR = 'src/case-definitions';
 
@@ -177,7 +178,7 @@ export async function syncCatalog(data: CsgoApiData, defDir: string = CASE_DEFIN
  */
 export async function ensureCaseCosts(): Promise<number> {
   const rows = await query<any>(
-    `SELECT c.id, p.lowest_price_cents AS steam_cents
+    `SELECT c.id, i.name AS item_name, p.lowest_price_cents AS steam_cents
      FROM cases c
      JOIN items i ON i.id = c.item_id
      LEFT JOIN prices p ON p.item_id = i.id AND p.wear = 'any' AND p.stattrak = 0 AND p.souvenir = 0
@@ -185,8 +186,12 @@ export async function ensureCaseCosts(): Promise<number> {
   );
   let n = 0;
   for (const r of rows) {
-    if (r.steam_cents == null) continue; // no real price yet: leave NULL
-    const cost = Math.max(1, Math.round(Number(r.steam_cents) * config.priceCostRatio));
+    // The fixed snapshot is primary: an exact case entry wins over the slow
+    // Steam queue; the prices table only fills in when the snapshot has none.
+    const fixed = lookupFixedPrice(r.item_name);
+    const base = fixed ? fixed.priceCents : r.steam_cents != null ? Number(r.steam_cents) : null;
+    if (base == null) continue; // no price anywhere yet: leave NULL
+    const cost = Math.max(1, Math.round(base * config.priceCostRatio));
     await run('UPDATE cases SET cost_cents = $2, updated_at = now() WHERE id = $1', [r.id, cost]);
     n++;
   }

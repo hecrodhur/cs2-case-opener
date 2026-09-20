@@ -4,6 +4,7 @@ import { RealtimeHub } from './realtime.js';
 import { pushNotification } from './notify.js';
 import { httpError, refreshInventorySummary } from './opening.js';
 import { estimatedValueCents } from '../util/value.js';
+import { variantMhn } from '../util/marketHash.js';
 
 export interface QuickSellResult {
   saleCents: number;
@@ -59,6 +60,7 @@ export async function quickSellMany(
           phase: row.phase,
           seed: row.seed,
           category: row.category,
+          exactMhn: variantMhn(row.item_name, { wear: row.wear, stattrak: row.stattrak, souvenir: row.souvenir, glove: row.category === 'Gloves' }),
         },
         priceRows,
       );
@@ -134,6 +136,7 @@ export async function quickSellItem(
         phase: row.phase,
         seed: row.seed,
         category: row.category,
+        exactMhn: variantMhn(row.item_name, { wear: row.wear, stattrak: row.stattrak, souvenir: row.souvenir, glove: row.category === 'Gloves' }),
       },
       priceRows,
     );

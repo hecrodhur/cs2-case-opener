@@ -2,6 +2,7 @@ import { one, query, run, tx, js } from '../db.js';
 import { hashPassword } from './auth.js';
 import { refreshInventorySummary, loadCaseWithPools, rollDrop, persistDrop } from './opening.js';
 import { estimatedValueCents, resolveSteamPrice } from '../util/value.js';
+import { variantMhn } from '../util/marketHash.js';
 import { rollFloat, wearFromFloat, makeSeed, rollInt } from '../util/rng.js';
 import type { RarityTier } from 'shared';
 
@@ -91,6 +92,8 @@ async function createInstanceFor(user: any, item: any): Promise<any> {
         pattern: item.pattern,
         phase: null,
         seed,
+        category: item.category,
+        exactMhn: variantMhn(item.name, { wear, stattrak: false, souvenir: false, glove: item.category === 'Gloves' }),
       },
       priceRows,
     );
@@ -255,7 +258,7 @@ export async function runAdminCommand(admin: { id: number }, raw: string): Promi
         if (!item) return { ok: false, output: `item "${itemName}" not in catalog` };
         const rows = await resolveSteamPrice(item.id);
         const value = estimatedValueCents(
-          { tier: item.rarity_tier, floatValue: null, wear: null, stattrak: false, souvenir: false, pattern: item.pattern, phase: null, seed: null },
+          { tier: item.rarity_tier, floatValue: null, wear: null, stattrak: false, souvenir: false, pattern: item.pattern, phase: null, seed: null, category: item.category, exactMhn: variantMhn(item.name, { wear: null, stattrak: false, souvenir: false, glove: item.category === 'Gloves' }) },
           rows ?? [],
         );
         const steam = rows?.length ? `Steam lowest ask: ${fmt(Math.min(...rows.map((r) => Number(r.lowest_price_cents))))}` : 'no Steam price yet';

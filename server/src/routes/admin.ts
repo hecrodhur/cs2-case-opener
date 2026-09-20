@@ -4,6 +4,7 @@ import { getSettings, setSetting, validateSettings } from '../services/global.js
 import { loadCsgoApiData } from '../data/api.js';
 import { syncCatalog } from '../data/sync.js';
 import { priceStats, refreshPricesForCases, repairCaseCosts, PRICE_BATCH_SIZE } from '../services/priceJobs.js';
+import { fixedPricesMeta } from '../data/fixedPrices.js';
 import { config } from '../config.js';
 import { STEAM_UA, classifySteamError, parseMarketHtml } from '../services/pricing.js';
 import { steamQueryFor } from '../util/marketHash.js';
@@ -208,6 +209,14 @@ route.post('/api/admin/sync/prices', async (req, ctx) => {
 route.get('/api/admin/prices/stats', async (req) => {
   requireAdmin(await authUser(req));
   return json(200, await priceStats());
+});
+
+// Fixed price snapshot provenance: where the bundled prices came from and how
+// complete they are. In-game value uses this snapshot first when an exact
+// market_hash_name has a real price.
+route.get('/api/admin/prices/snapshot', async (req) => {
+  requireAdmin(await authUser(req));
+  return json(200, fixedPricesMeta());
 });
 
 // One-shot repair: invalidates every active case cost so the next price sync
