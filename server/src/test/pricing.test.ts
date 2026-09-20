@@ -279,3 +279,60 @@ test('8+9. refresh queue is progressive and resumes (cron never restarts from th
     assert.deepEqual(names, [...names].sort(), 'oldest-first deterministic order');
   });
 });
+
+test('10. repair forces re-enqueue even when the case price row is fresh', async () => {
+  await handle.withDb(async () => {
+    const { insert, run } = await import('../db.js');
+    const { repairCaseCosts } = await import('../services/priceJobs.js');
+    const itemId = await insert(
+      `INSERT INTO items (kind, market_hash_name, name, rarity_tier) VALUES ('case', 'Repair Case', 'Repair Case', 'mil_spec')`,
+    );
+    const caseId = await insert(
+      `INSERT INTO cases (item_id, name, market_hash_name, cost_cents, first_sale_date, active) VALUES ($1, 'Repair Case', 'Repair Case', 5000, '2015-01-01', 1)`,
+      [itemId],
+    );
+    // fresh price row (updated a moment ago): the normal queue would skip it
+    await run(
+      `INSERT INTO prices (item_id, wear, stattrak, souvenir, lowest_price_cents, currency, source, updated_at, last_known_cents)
+       VALUES ($1, 'any', 0, 0, 5000, 'EUR', 'steam_market', now(), 5000)`,
+      [itemId],
+    );
+    const before = await pickPriceJobs(100);
+    assert.ok(!before.some((j) => j.itemId === itemId), 'fresh row: not picked before repair');
+
+    const invalidated = await repairCaseCosts();
+    assert.ok(invalidated >= 1, 'case cost reset');
+    const cost = (handle.db.prepare('SELECT cost_cents FROM cases WHERE id = ?').get(caseId) as any).cost_cents;
+    assert.equal(cost, null, 'cost reset to NULL');
+    const price = (handle.db.prepare('SELECT lowest_price_cents FROM prices WHERE item_id = ?').get(itemId) as any).lowest_price_cents;
+    assert.equal(Number(price), 5000, 'last known price kept (last-known-good)');
+
+    const after = await pickPriceJobs(100);
+    const job = after.find((j) => j.itemId === itemId);
+    assert.ok(job, 'repaired case is re-enqueued despite the fresh fetch');
+    assert.equal(job!.mhn, 'Repair Case');
+  });
+});
+
+test('11. ensureCaseCosts only uses the base variant (souvenir rows never feed a case cost)', async () => {
+  await handle.withDb(async () => {
+    const { insert, run } = await import('../db.js');
+    const { ensureCaseCosts } = await import('../data/sync.js');
+    const itemId = await insert(
+      `INSERT INTO items (kind, market_hash_name, name, rarity_tier) VALUES ('case', 'Souv Case', 'Souv Case', 'mil_spec')`,
+    );
+    const caseId = await insert(
+      `INSERT INTO cases (item_id, name, market_hash_name, first_sale_date, active) VALUES ($1, 'Souv Case', 'Souv Case', '2015-01-01', 1)`,
+      [itemId],
+    );
+    // only a souvenir variant exists for this item: it must not be used
+    await run(
+      `INSERT INTO prices (item_id, wear, stattrak, souvenir, lowest_price_cents, currency, source, updated_at)
+       VALUES ($1, 'any', 0, 1, 9000, 'EUR', 'steam_market', now())`,
+      [itemId],
+    );
+    await ensureCaseCosts();
+    const cost = (handle.db.prepare('SELECT cost_cents FROM cases WHERE id = ?').get(caseId) as any).cost_cents;
+    assert.equal(cost, null, 'souvenir price never used for the base case cost');
+  });
+});

@@ -147,6 +147,7 @@ export interface PriceStats {
   pending: number;
   lastSyncedAt: string | null;
   steamOk: number;
+  fallbackOk: number;
   notListed: number;
   errors: number;
   http403: number;
@@ -200,6 +201,7 @@ export async function priceStats(): Promise<PriceStats> {
     pending: Number(pendingCase) + Number(pendingSkin),
     lastSyncedAt: last,
     steamOk: Number(rs?.steam_ok ?? 0),
+    fallbackOk: Number(rs?.fallback_ok ?? 0),
     notListed: Number(rs?.not_listed ?? 0),
     errors: Number(rs?.errors ?? 0),
     http403: Number(rs?.http_403 ?? 0),
@@ -225,10 +227,21 @@ export async function refreshPricesForCases(prices: PriceSyncService, limit = PR
 }
 
 /**
- * One-shot repair: invalidates every active case cost so the next price sync
- * re-derives it from real Steam data (or leaves it NULL when Steam has no
- * listing). Balances, inventories, openings and battles are untouched.
+ * One-shot repair: resets every active case cost AND forces the queue to
+ * re-fetch every active case, even when its last fetch was minutes ago.
+ * The last known price stays as last-known-good until the re-fetch
+ * overwrites it. Balances, inventories, openings and battles untouched.
  */
 export async function repairCaseCosts(): Promise<number> {
-  return run('UPDATE cases SET cost_cents = NULL, updated_at = now() WHERE active = 1 AND cost_cents IS NOT NULL');
+  const reset = await run('UPDATE cases SET cost_cents = NULL, updated_at = now() WHERE active = 1 AND cost_cents IS NOT NULL');
+  // pickPriceJobs() only re-enqueues rows whose updated_at is stale; a recent
+  // updated_at would leave the repaired cases out of the queue, so the
+  // freshness marker of the base variant is forced to the epoch (the price
+  // itself is kept as last-known-good until the re-fetch overwrites it).
+  await run(
+    `UPDATE prices SET updated_at = '1970-01-01T00:00:00Z'
+     WHERE wear = 'any' AND stattrak = 0 AND souvenir = 0
+       AND item_id IN (SELECT item_id FROM cases WHERE active = 1)`,
+  );
+  return reset;
 }

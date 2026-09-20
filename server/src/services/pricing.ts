@@ -129,7 +129,7 @@ export class PriceSyncService {
   hub: RealtimeHub | null = null;
   private peCache: { at: number; map: Map<string, SteamPrice> } | null = null;
   // counters accumulated during one run(), persisted once at the end
-  private batch = { ok: 0, not_listed: 0, errors: 0, http_403: 0, http_429: 0, http_5xx: 0, json: 0, other: 0, lastError: '' };
+  private batch = { ok: 0, fallback: 0, not_listed: 0, errors: 0, http_403: 0, http_429: 0, http_5xx: 0, json: 0, other: 0, lastError: '' };
 
   setHub(hub: RealtimeHub) {
     this.hub = hub;
@@ -161,7 +161,7 @@ export class PriceSyncService {
     if (this.running) return 0;
     this.running = true;
     const attempts = Math.max(1, opts?.attempts ?? 3);
-    this.batch = { ok: 0, not_listed: 0, errors: 0, http_403: 0, http_429: 0, http_5xx: 0, json: 0, other: 0, lastError: '' };
+    this.batch = { ok: 0, fallback: 0, not_listed: 0, errors: 0, http_403: 0, http_429: 0, http_5xx: 0, json: 0, other: 0, lastError: '' };
     let done = 0;
     try {
       while (this.queue.length && (maxJobs == null || done < maxJobs)) {
@@ -316,7 +316,10 @@ export class PriceSyncService {
       return 'error';
     }
     if (result.status === 'priced') {
-      this.batch.ok++;
+      // steam_ok only counts real Steam results; fallback recoveries are
+      // tracked separately so they never fake a Steam success
+      if (result.source === 'steam_market') this.batch.ok++;
+      else this.batch.fallback++;
       const p = result.price;
       await run(
         `INSERT INTO prices (item_id, wear, stattrak, souvenir, lowest_price_cents, median_price_cents, volume, currency, source, updated_at, last_known_cents)
@@ -358,12 +361,13 @@ export class PriceSyncService {
   /** Persist this batch's counters (one D1 statement per batch run). */
   private async persistBatchStats(): Promise<void> {
     const b = this.batch;
-    if (b.ok === 0 && b.not_listed === 0 && b.errors === 0) return;
+    if (b.ok === 0 && b.fallback === 0 && b.not_listed === 0 && b.errors === 0) return;
     await run(
-      `INSERT INTO price_run_stats (id, steam_ok, not_listed, errors, http_403, http_429, http_5xx, json_errors, other_errors, last_ok_at, last_error_at, last_error)
-       VALUES (1, $1,$2,$3,$4,$5,$6,$7,$8, now(), now(), $9)
+      `INSERT INTO price_run_stats (id, steam_ok, fallback_ok, not_listed, errors, http_403, http_429, http_5xx, json_errors, other_errors, last_ok_at, last_error_at, last_error)
+       VALUES (1, $1,$2,$3,$4,$5,$6,$7,$8,$9, now(), now(), $10)
        ON CONFLICT(id) DO UPDATE SET
          steam_ok = price_run_stats.steam_ok + EXCLUDED.steam_ok,
+         fallback_ok = price_run_stats.fallback_ok + EXCLUDED.fallback_ok,
          not_listed = price_run_stats.not_listed + EXCLUDED.not_listed,
          errors = price_run_stats.errors + EXCLUDED.errors,
          http_403 = price_run_stats.http_403 + EXCLUDED.http_403,
@@ -374,7 +378,7 @@ export class PriceSyncService {
          last_ok_at = CASE WHEN EXCLUDED.steam_ok > 0 THEN EXCLUDED.last_ok_at ELSE price_run_stats.last_ok_at END,
          last_error_at = CASE WHEN EXCLUDED.errors > 0 THEN EXCLUDED.last_error_at ELSE price_run_stats.last_error_at END,
          last_error = CASE WHEN EXCLUDED.errors > 0 THEN EXCLUDED.last_error ELSE price_run_stats.last_error END`,
-      [b.ok, b.not_listed, b.errors, b.http_403, b.http_429, b.http_5xx, b.json, b.other, b.lastError],
+      [b.ok, b.fallback, b.not_listed, b.errors, b.http_403, b.http_429, b.http_5xx, b.json, b.other, b.lastError],
     ).catch(() => {});
   }
 

@@ -244,6 +244,7 @@ test('pricempire fills in when Steam errors (keyed, real external price)', async
     }
     return new Response('', { status: 429 }); // Steam rate-limited
   };
+  const before = await handle.withDb(async () => priceStats());
   await handle.withDb(async () => {
     const prices = new PriceSyncService();
     prices.request({ itemId, mhn: 'PE Case', wear: 'any', stattrak: false });
@@ -253,6 +254,10 @@ test('pricempire fills in when Steam errors (keyed, real external price)', async
   assert.ok(r, 'price row written by fallback');
   assert.equal(Number(r.lowest_price_cents), 123, 'pricempire 1.23 -> 123 cents');
   assert.equal(r.source, 'pricempire');
+  const after = await handle.withDb(async () => priceStats());
+  assert.equal(after.fallbackOk - before.fallbackOk, 1, 'recovery counted as fallback, not steam ok');
+  assert.equal(after.steamOk - before.steamOk, 0, 'steam_ok untouched by a fallback recovery');
+  assert.equal(after.errors - before.errors, 1, 'the Steam 429 itself is still counted');
   setPricempireKey('');
   globalThis.fetch = origFetch;
 });

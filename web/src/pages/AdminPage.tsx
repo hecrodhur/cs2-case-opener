@@ -231,6 +231,7 @@ export default function AdminPage() {
               <div className="tier-row"><span>Queue pending</span><b>{priceQ.data.pending}</b></div>
               <div className="tier-row"><span>Last price update</span><b>{priceQ.data.lastSyncedAt ? new Date(priceQ.data.lastSyncedAt).toLocaleString() : '-'}</b></div>
               <div className="tier-row"><span>Steam OK (total)</span><b>{priceQ.data.steamOk}</b></div>
+              <div className="tier-row"><span>Recovered via Pricempire</span><b>{priceQ.data.fallbackOk}</b></div>
               <div className="tier-row"><span>No listing on Steam</span><b>{priceQ.data.notListed}</b></div>
               <div className="tier-row"><span>Errors (total)</span><b>{priceQ.data.errors}</b></div>
               <div className="tier-row"><span>&nbsp;&nbsp;HTTP 403</span><b>{priceQ.data.http403}</b></div>

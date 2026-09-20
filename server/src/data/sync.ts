@@ -180,7 +180,7 @@ export async function ensureCaseCosts(): Promise<number> {
     `SELECT c.id, p.lowest_price_cents AS steam_cents
      FROM cases c
      JOIN items i ON i.id = c.item_id
-     LEFT JOIN prices p ON p.item_id = i.id AND p.wear = 'any' AND p.stattrak = 0
+     LEFT JOIN prices p ON p.item_id = i.id AND p.wear = 'any' AND p.stattrak = 0 AND p.souvenir = 0
      WHERE c.cost_cents IS NULL AND c.active = TRUE`,
   );
   let n = 0;
