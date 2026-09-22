@@ -1,12 +1,17 @@
-// Fixed price snapshot (server/src/data/fixedPrices.json), generated manually by
-// `node generate-fixed-prices.mjs`. It is the PRIMARY in-game value source: an
-// exact market_hash_name lookup here wins over the slow Steam queue.
+// Fixed price snapshot (server/src/data/fixedPrices.json). It is the PRIMARY
+// in-game value source: an exact market_hash_name lookup here wins over the
+// slow Steam queue.
 //
+// Provenance (see generated_at / source_priority inside the file):
+//   - cases: real Steam ask prices (priceoverview lowest_price, EUR)
+//   - knives: real Steam lowest price per knife, expanded per wear with the
+//     canonical WEAR_VALUE_RATIO anchored at Battle-Scarred (a plain knife has
+//     no wear in its market_hash_name, so Steam lists one price per knife/ST)
 // The JSON price is already in EUR cents, so it is used verbatim as priceCents
 // (no wear ratio, no StatTrak/Souvenir premium, no pattern/seed adjustment).
-// Entries with a null price_cents are treated as "not in snapshot" and the
-// caller falls back to the live model. The file is bundled into the worker, so
-// it is imported as a module (Workers have no filesystem).
+// Entries with a null price_cents are genuinely unlisted on Steam; the caller
+// falls back to the live model. The file is bundled into the worker, so it is
+// imported as a module (Workers have no filesystem).
 import raw from './fixedPrices.json' with { type: 'json' };
 
 export interface FixedPriceEntry {
